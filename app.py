@@ -1133,6 +1133,7 @@ def accept():
 	actions = session['actions']
 	actions[TIME] = int(round(time() - actions[TIME]))
 	treestr = None
+	#tags = {}	
 	if 'dec' in request.args:
 		actions[DECTREE] += int(request.args.get('dec', 0))
 	if 'tree' in request.args:
