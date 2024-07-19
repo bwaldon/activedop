@@ -699,6 +699,11 @@ def edit():
 			treestr = cgel.parse(cgel_tree)[0]
 			rows = max(5, treestr.depth)
 		else:
+			# if initial parse labels non-gaps as GAP, change to N-Head by default
+			for subt in tree.subtrees(lambda t: t.height() == 2):
+				i = subt[0]
+				if subt.label.startswith('GAP') and senttok[i] != '_.':
+					subt.label = 'N-Head'
 			block = writetree(tree, senttok, '1', 'export', comment='')  #comment='%s %r' % (username, actions))
 			block = io.StringIO(block)
 			treestr = next(load_as_cgel(block))
