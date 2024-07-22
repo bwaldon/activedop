@@ -12,7 +12,7 @@ RUN pip install sphinx
 RUN mkdir -p _static
 RUN make install
 RUN pip install grapheme
-WORKDIR /home/merug/activedoptest/activedopmeru/
+WORKDIR ~/activedopmeru/
 ENV FLASK_APP=app.py
 ENV FLASK_RUN_HOST=0.0.0.0
 ENV FLASK_ENV=development
