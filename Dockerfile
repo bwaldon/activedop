@@ -1,4 +1,4 @@
-FROM python:3.6
+FROM python:3.9
 
 RUN echo export PATH=$HOME/.local/bin:$PATH >> ~/.bashrc
 
@@ -10,7 +10,7 @@ RUN apt-get install -y git
 RUN apt-get install -y make
 RUN apt-get install -y texlive-latex-base
 RUN apt-get install -y texlive-fonts-recommended
-#RUN apt-get install -y texlive-fonts-extra
+RUN apt-get install -y texlive-latex-extra
 RUN git clone --recursive https://github.com/andreasvc/disco-dop.git
 RUN cd disco-dop
 
@@ -23,7 +23,7 @@ RUN mkdir -p _static
 RUN make install
 RUN pip install grapheme
 
-WORKDIR /home/merug/activedopmeru/
+WORKDIR /home/merug/activedoptest/activedopmeru/
 ENV FLASK_APP=app.py
 ENV FLASK_RUN_HOST=0.0.0.0
 ENV FLASK_ENV=development

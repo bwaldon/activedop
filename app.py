@@ -1294,8 +1294,7 @@ def download_pdf():
 
 	subprocess.run(['pdflatex', '-output-directory', output_dir, os.path.join(output_dir, "file.tex")])
 
-	pdf_path = os.path.join(output_dir, "file.pdf")
-
+	pdf_path = os.path.join(output_dir, "file.pdf")	
 	return send_file(pdf_path, as_attachment=True, attachment_filename='downloaded_file.pdf')
 
 @app.route('/annotate/exportcgeltree')
