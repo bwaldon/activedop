@@ -27,10 +27,11 @@ WORKDIR /home/merug/activedopmeru/
 ENV FLASK_APP=app.py
 ENV FLASK_RUN_HOST=0.0.0.0
 ENV FLASK_ENV=development
-#RUN python -m flask initdb
-#RUN python -m flask initpriorities
+
 COPY . .
 
 EXPOSE 5000
+RUN python -m flask initdb
+RUN python -m flask initpriorities
 
 CMD ["python", "-m", "flask", "run", "--with-threads"]
