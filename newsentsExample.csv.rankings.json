@@ -1,0 +1,56 @@
+[
+    [
+        3,
+        3.6736298275241372,
+        "The girl ate pizza with tomatoes",
+        "id4"
+    ],
+    [
+        1,
+        2.702709644336757,
+        "The girl ate the pizza with a fork",
+        "id2"
+    ],
+    [
+        2,
+        2.5013714625137196,
+        "The girl ate the pizza with the tomatoes",
+        "id3"
+    ],
+    [
+        0,
+        1.6475508327726855,
+        "The boy saw the girl under the tree with the telescope in the forest",
+        "id1"
+    ],
+    [
+        7,
+        0.8895849807473573,
+        "The mouse saw the little cat",
+        "id8"
+    ],
+    [
+        4,
+        -0.0,
+        "The cat saw the pizza",
+        "id5"
+    ],
+    [
+        5,
+        -0.0,
+        "The mouse stole the pizza",
+        "id6"
+    ],
+    [
+        6,
+        -0.0,
+        "The cat ate the mouse",
+        "id7"
+    ],
+    [
+        8,
+        -0.0,
+        "The cat ate the dog",
+        "id9"
+    ]
+]

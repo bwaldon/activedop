@@ -1138,6 +1138,7 @@ def accept():
 	actions = session['actions']
 	actions[TIME] = int(round(time() - actions[TIME]))
 	treestr = None
+	#tags = {}	
 	if 'dec' in request.args:
 		actions[DECTREE] += int(request.args.get('dec', 0))
 	if 'tree' in request.args:
@@ -1293,8 +1294,7 @@ def download_pdf():
 
 	subprocess.run(['pdflatex', '-output-directory', output_dir, os.path.join(output_dir, "file.tex")])
 
-	pdf_path = os.path.join(output_dir, "file.pdf")
-
+	pdf_path = os.path.join(output_dir, "file.pdf")	
 	return send_file(pdf_path, as_attachment=True, attachment_filename='downloaded_file.pdf')
 
 @app.route('/annotate/exportcgeltree')
