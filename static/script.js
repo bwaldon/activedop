@@ -264,6 +264,23 @@ function registertoggleable(div) {
 	}
 }
 
+function registertooltip(div) {
+	var elems = div.getElementsByClassName('p');
+	for (var n = 0; n < elems.length; n++) {
+		var tooltipview = elems[n].attributes.tooltipview.value;
+		if (tooltipview == 'true') {
+			elems[n].onmouseover = function(event) { showtooltip(event); }
+		}
+	}
+}
+
+// TODO: implement floating tooltip view (currently just logs metadata to console)
+function showtooltip(event) {
+	var metadata = JSON.parse(document.queryform.metadata.value);
+	var term_id = event.currentTarget.attributes.term_id.value;
+	console.log(metadata[term_id])
+}
+
 function registerdraggable(div) {
 	var elems = div.getElementsByClassName('n');
 	for (var n = 0; n < elems.length; n++) {
@@ -308,6 +325,7 @@ function replacetree() {
 		if(xmlhttp.readyState==4) { // && xmlhttp.status==200) {
 			el.innerHTML = xmlhttp.responseText;
 			registerdraggable(el);
+			registertooltip(el);
 		}
 	};
 	url = '/annotate/redraw?sentno=' + document.queryform.sentno.value
@@ -394,6 +412,7 @@ function pick(labeltype, label) {
 				oldtree = editor.getValue();
 			}
 			registerdraggable(el);
+			registertooltip(el);
 		}
 	};
 	url = '/annotate/newlabel?sentno=' + document.queryform.sentno.value
@@ -450,6 +469,7 @@ function picksubtree(n) {
 				oldtree = editor.getValue();
 			}
 			registerdraggable(el);
+			registertooltip(el);
 			var el = document.getElementById('nbest');
 			el.innerHTML = '';
 			el.style.display = 'none';
@@ -512,6 +532,7 @@ function drop(ev) {
 				oldtree = editor.getValue();
 			}
 			registerdraggable(el);
+			registertooltip(el);
 		}
 	};
 	url = '/annotate/reattach?sentno=' + document.queryform.sentno.value
@@ -549,6 +570,7 @@ function newproj(ev) {
 				oldtree = editor.getValue();
 			}
 			registerdraggable(el);
+			registertooltip(el);
 		}
 	};
 	url = '/annotate/reattach?sentno=' + document.queryform.sentno.value

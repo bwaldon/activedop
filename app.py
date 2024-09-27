@@ -782,6 +782,8 @@ def edit():
 		rows = max(5, treestr.count('\n') + 1)
 	else:
 		rows = max(5, treestr.depth)
+	# todo: change this line to reflect class abstraction ActivedopTree
+	terminals_json = json.dumps([t.__dict__ for t in cgel_tree.terminals()])
 	return render_template('edittree.html',
 			prevlink=('/annotate/annotate/%d' % (sentno - 1))
 				if sentno > 1 else '/annotate/annotate/%d' % (len(SENTENCES)),
@@ -789,7 +791,7 @@ def edit():
 				if sentno < len(SENTENCES) else '/annotate/annotate/1',
 			unextlink=('/annotate/annotate/%d' % firstunannotated(username))
 				if sentno < len(SENTENCES) else '#',
-			treestr=treestr, senttok=sent, id=id,
+			treestr=treestr, senttok=sent, id=id, terminal_metadata=terminals_json,
 			sentno=sentno, lineno=lineno + 1, totalsents=len(SENTENCES),
 			numannotated=numannotated(username),
 			poslabels=sorted(t for t in workerattr('poslabels') if ('@' not in t) and (t not in PUNCT_TAGS.values()) and (t != SYMBOL_TAG)),
@@ -973,6 +975,24 @@ def tree_process(tree : ParentedTree, senttok: List[str]) -> tuple[ParentedTree,
 
 	return (parented_tree, cgel_tree)
 
+def add_tooltip(htmltree :str) -> str:
+	""" 
+	Given an html rendering of a tree [the output of DrawTree(... html=True ...) or DrawTree.text(... html=True ...)], output an html tree 
+	in which tree preterminals have a feature called 'tooltipview'. This feature determines whether the user is able to view the corresponding terminal's
+	metadata attributes on hover.
+	"""
+	htmltree_preterminals = re.findall(r'<span\s+class=p[^>]*>', htmltree)
+	term_counter = 0
+	for preterminal in htmltree_preterminals:
+		label, _ = re.search(r'data-s="([^"]*)"', preterminal).group(1).split(' ')
+		m = LABELRE.match(label)
+		if m.group(2) == "-p" or is_punct_postag(m.group(1)):
+			htmltree = htmltree.replace(preterminal, preterminal.replace('class=p', 'class=p tooltipview="false"'))
+		else:
+			htmltree = htmltree.replace(preterminal, preterminal.replace('class=p', 'class=p tooltipview="true" term_id={}'.format(term_counter)))
+			term_counter += 1
+	return htmltree
+
 def add_editable_attribute(htmltree :str) -> str:
 	""" 
 	Given an html rendering of a tree [the output of DrawTree(... html=True ...) or DrawTree.text(... html=True ...)], output an html tree 
@@ -1037,9 +1057,9 @@ def redraw():
 	return Markup('%s\n\n%s\n\n%s' % (
 			msg,
 			link,
-			add_editable_attribute(DrawTree(tree_to_viz, senttok).text(
+			add_tooltip(add_editable_attribute(DrawTree(tree_to_viz, senttok).text(
 				unicodelines=True, html=True, funcsep='-', morphsep='/',
-				nodeprops='t0', maxwidth=30))
+				nodeprops='t0', maxwidth=30)))
 			))
 
 def graphical_operation_preamble():
@@ -1123,8 +1143,8 @@ def newlabel():
 	return Markup('%s\n\n%s\n\n%s%s\t%s' % (
 			msg,
 			link, error,
-			add_editable_attribute(dt.text(unicodelines=True, html=True, funcsep='-', morphsep='/',
-				nodeprops='t0', maxwidth=30)),
+			add_tooltip(add_editable_attribute(dt.text(unicodelines=True, html=True, funcsep='-', morphsep='/',
+				nodeprops='t0', maxwidth=30))),
 			treestr))
 
 
@@ -1273,8 +1293,8 @@ def reattach():
 	return Markup('%s\n\n%s\n\n%s%s\t%s' % (
 			msg,
 			link, error,
-			add_editable_attribute(dt.text(unicodelines=True, html=True, funcsep='-', morphsep='/',
-				nodeprops='t0', maxwidth=30)),
+			add_tooltip(add_editable_attribute(dt.text(unicodelines=True, html=True, funcsep='-', morphsep='/',
+				nodeprops='t0', maxwidth=30))),
 			treestr))
 
 
