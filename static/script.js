@@ -74,7 +74,8 @@ function annotate() {
 	div.html('[...wait for it...]');
 
 	data = { sent: document.queryform.sent.value,
-			sentno: document.queryform.sentno.value };
+			sentno: document.queryform.sentno.value,
+			github_url: document.queryform.github_url.value,};
 
 	/* if there were any filter constraints, convert them to parsing constraints now */
 	require.push.apply(require, frequire);

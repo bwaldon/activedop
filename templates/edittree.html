@@ -143,6 +143,50 @@
 				lineNumbers: true,
 				matchBrackets: true,
 			});
+			
+	function submitForm() {
+        document.getElementById('content-input').value = editor.getValue();
+        document.getElementById('save-form').submit();
+    }
 </script>
+<form id="save-form" action="{{ url_for('save_changes') }}" method="post">
+    <input type="hidden" id="content-input" name="content">
+    
+    <div class="row g-3 mb-3">
+        {% if has_push_access %}
+        <div class="col-md-4">
+            <label for="branch_name" class="form-label">New Branch Name</label>
+            <input type="text" class="form-control" id="branch_name" name="branch_name" 
+                   value="edit-{{ file_path.replace('/', '-') }}" required>
+        </div>
+        <div class="col-md-8">
+            <label for="commit_message" class="form-label">Commit Message</label>
+            <input type="text" class="form-control" id="commit_message" name="commit_message" 
+                   value="Edit {{ file_path }}" required>
+        </div>
+		<div class = "col-md-8">
+			<label for="tree_by" class="form-label">Tree by:</label>
+			<input type="text" class="form-control" id="tree_by" name="tree_by" 
+				value="{{ tree_by }}" required>
+		</div>
+        {% endif %}
+    </div>
+    
+    <div class="row mb-5">
+        <div class="col-12">            
+            {% if has_push_access %}
+            <button type="button" class="btn btn-primary" onclick="submitForm()">
+                Save Changes & Create PR
+            </button>
+            {% else %}
+            <div class="alert alert-warning" role="alert">
+                <strong>Note:</strong> This GitHub App installation doesn't have write permissions to this repository. 
+                You can edit the file, but you won't be able to create a PR. 
+                Please make sure the app has the necessary permissions.
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</form>
 
 {% endblock %}

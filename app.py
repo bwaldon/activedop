@@ -43,7 +43,7 @@ from functools import wraps
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from urllib.parse import urlparse, urlencode, urljoin
+from urllib.parse import urlparse, urlencode, urljoin, unquote
 from flask import (Flask, Markup, Response, jsonify, request, session, g, flash, abort,
 		redirect, url_for, render_template, send_file, send_from_directory,
 		stream_with_context)
@@ -58,9 +58,13 @@ from discodop.parser import probstr
 from discodop.disambiguation import testconstraints
 from discodop.heads import applyheadrules
 from discodop.eval import editdistance
+import requests
+import base64
+from dotenv import load_dotenv
 import worker
 from workerattr import workerattr
 from activedoptree import ActivedopTree, LABELRE, is_punct_label, cgel_to_ptree
+from gh_helpers import get_installation_access_token, parse_github_url, check_push_access
 sys.path.append('./cgel')
 try:
 	import cgel
@@ -105,11 +109,427 @@ app.config.from_pyfile('settings.cfg', silent=True)
 app.config.from_envvar('FLASK_SETTINGS', silent=True)
 WORKERS = app.config['WORKERS']
 
+app.secret_key = os.getenv("SECRET_KEY")
+
+# GitHub App credentials
+GITHUB_APP_ID = os.getenv("GITHUB_APP_ID")
+GITHUB_APP_NAME = os.getenv("GITHUB_APP_NAME", "Tree-Editor")
+with open('annotation-editor.2025-03-03.private-key.pem', 'r') as key_file:
+	GITHUB_APP_PRIVATE_KEY = key_file.read()
+GITHUB_APP_WEBHOOK_SECRET = os.getenv("GITHUB_APP_WEBHOOK_SECRET")
+GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
+GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
+
 logging.basicConfig()
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 logger.handlers[0].setFormatter(logging.Formatter(
 		fmt='%(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+
+@app.route('/github_login')
+def github_login():
+	"""
+	Redirect to GitHub for user authorization
+	"""
+	# Generate a random state value for security
+	import random
+	import string
+	state = ''.join(random.choices(string.ascii_lowercase + string.digits, k=20))
+	session['oauth_state'] = state
+	
+	# Store the original URL to redirect back after authentication if any
+	if request.args.get('next'):
+		session['redirect_after_login'] = request.args.get('next')
+	
+	# Redirect to GitHub OAuth flow
+	return redirect(
+		f"https://github.com/login/oauth/authorize"
+		f"?client_id={GITHUB_CLIENT_ID}"
+		f"&redirect_uri={url_for('github_callback', _external=True)}"
+		f"&state={state}"
+	)
+
+@app.route('/github_callback')
+def github_callback():
+	"""
+	Handle GitHub OAuth callback and obtain user access token
+	"""
+	# Verify state to prevent CSRF
+	if request.args.get('state') != session.get('oauth_state'):
+		flash("State verification failed. Please try again.", "error")
+		return redirect(url_for('annotate'))
+	
+	# Exchange code for user access token
+	code = request.args.get('code')
+	
+	if not code:
+		flash("Authentication failed - no code received", "error")
+		return redirect(url_for('annotate'))
+	
+	# Request user access token from GitHub
+	response = requests.post(
+		'https://github.com/login/oauth/access_token',
+		headers={'Accept': 'application/json'},
+		data={
+			'client_id': GITHUB_CLIENT_ID,
+			'client_secret': GITHUB_CLIENT_SECRET,
+			'code': code,
+			'redirect_uri': url_for('github_callback', _external=True)
+		}
+	)
+	
+	if response.status_code != 200:
+		flash(f"Failed to authenticate: {response.content}", "error")
+		return redirect(url_for('annotate'))
+	
+	data = response.json()
+	
+	# Store the user access token in session
+	session['user_access_token'] = data.get('access_token')
+	
+	# Get user information
+	user_response = requests.get(
+		'https://api.github.com/user',
+		headers={
+			'Authorization': f"token {session['user_access_token']}",
+			'Accept': 'application/vnd.github.v3+json'
+		}
+	)
+	
+	if user_response.status_code != 200:
+		flash("Failed to fetch user information", "error")
+		return redirect(url_for('annotate'))
+	
+	user_data = user_response.json()
+	session['user_login'] = user_data.get('login')
+	
+	# Redirect to the original URL if stored
+	if 'redirect_after_login' in session:
+		redirect_url = session.pop('redirect_after_login')
+		return redirect(redirect_url)
+	
+	flash(f"Logged in as {user_data.get('login')}", "success")
+	return redirect(url_for('annotate'))
+
+@app.route('/from-git/<path:github_url>')
+def from_git(github_url):
+	"""
+	Parse GitHub URL and display file editor
+	"""
+	# Check if user is logged in - if not, redirect to login with return URL
+	if 'user_access_token' not in session:
+		return redirect(url_for('login', next=request.url))
+	
+	# Check if the installation ID is present in the session
+	if 'installation_id' not in session:
+		# Store the URL to redirect back after installation is selected
+		session['redirect_after_install'] = url_for('from_git', github_url=github_url)
+		return redirect(url_for('select_installation'))
+	
+	# Normalize URL
+	if not github_url.startswith('https://'):
+		github_url = 'https://' + github_url
+	
+	try:
+		owner, repo_name, branch, file_path = parse_github_url(github_url)
+		
+		# Get installation token for the repository
+		installation_token = get_installation_access_token(session['installation_id'])
+		
+		# Get file content from GitHub using the installation token
+		# First get the file metadata (including sha)
+		content_url = f'https://api.github.com/repos/{owner}/{repo_name}/contents/{file_path}?ref={branch}'
+		headers = {
+			'Authorization': f"token {installation_token}",
+			'Accept': 'application/vnd.github.v3+json'
+		}
+		
+		content_response = requests.get(content_url, headers=headers)
+		
+		if content_response.status_code != 200:
+			flash(f"Failed to fetch file metadata: {content_response.status_code}", "error")
+			return redirect(url_for('annotate'))
+		
+		file_data = content_response.json()
+		file_content = base64.b64decode(file_data['content']).decode('utf-8')
+		
+		# Store file info in session
+		session['file_info'] = {
+			'owner': owner,
+			'repo': repo_name,
+			'branch': branch,
+			'path': file_path,
+			'sha': file_data['sha'],
+			'original_content': file_content
+		}
+		
+		# Check if user and installation have write permissions to the repository
+		has_push_access = check_push_access(session)
+		
+		# construct treeobj from file content, which has the following format:
+		# ```
+		# # sent_id = [id]
+		# # text = [text]
+		# # sent = [tokenized text]
+		# # tree_by = [username]
+		# [tree]
+		# ```
+		# where `[tree]` is the tree in CGEL format, starting on the fifth line
+		sent_id, text, sent, tree_by, treestr = file_content.split('\n', 4)
+		sent_id = sent_id.split('=')[1].strip()
+		text = text.split('=')[1].strip()
+		sent = sent.split('=')[1].strip()
+		tree_by = tree_by.split('=')[1].strip()
+		if len(treestr) > 0:
+			treeobj = ActivedopTree.from_str(treestr)
+			senttok = treeobj.senttok
+			sentno = 1
+			username = "GitHubUser"
+			lineno = 1
+			rows = max(5, treeobj.treestr().count('\n') + 1)
+			msg = ""
+			id = generate_id()
+			SENTENCES.insert(0, " ".join(senttok))
+			refreshqueue(session['username'])
+			return render_template('edittree.html',
+				prevlink=('/annotate/annotate/%d' % (sentno - 1))
+					if sentno > 1 else '/annotate/annotate/%d' % (len(SENTENCES)),
+				nextlink=('/annotate/annotate/%d' % (sentno + 1))
+					if sentno < len(SENTENCES) else '/annotate/annotate/1',
+				unextlink=('/annotate/annotate/%d' % firstunannotated(username))
+					if sentno < len(SENTENCES) else '#',
+				treestr=treeobj.treestr(), senttok=' '.join(senttok), id=id,
+				sentno=sentno, lineno=lineno + 1, totalsents=len(SENTENCES),
+				numannotated=numannotated(username),
+				poslabels=sorted(t for t in workerattr('poslabels') if ('@' not in t) and (t not in app.config['PUNCT_TAGS']) and (t not in app.config['PUNCT_TAGS'].values()) and (t != app.config['SYMBOL_TAG'])),
+				phrasallabels=sorted(t for t in workerattr('phrasallabels') if '}' not in t),
+				functiontags=sorted(t for t in (workerattr('functiontags')
+					| set(app.config['FUNCTIONTAGWHITELIST'])) if '}' not in t and '@' not in t and t != "p"),
+				morphtags=sorted(workerattr('morphtags')),
+				annotationhelp=ANNOTATIONHELP,
+				rows=rows, cols=100,
+				has_push_access=has_push_access,
+				file_path=file_path,
+				tree_by=tree_by,
+				msg=msg)
+		else:
+			# to create a tokenized sentence, take the 'text' variable, lowercase the first word, split on whitespace, and split off punctuation
+			senttok = text.lower().split()
+			senttok = [re.split(r'([^\w\s])', token) for token in senttok]
+			senttok = [tok for sublist in senttok for tok in sublist if tok]
+			senttok = " ".join(senttok)
+			id = generate_id()
+			SENTENCES.insert(0, senttok)
+			refreshqueue(session['username'])
+
+			return redirect(url_for('annotate', sentno=1, github_url=github_url))	
+	
+	except Exception as e:
+		flash(f"Error processing GitHub URL: {str(e)}", "error")
+		return redirect(url_for('annotate'))
+
+@app.route('/select-installation')
+def select_installation():
+	"""
+	Let the user select a GitHub App installation
+	"""
+	if 'user_access_token' not in session:
+		return redirect(url_for('github_login', next=request.url))
+		
+	# Use user access token to get installations
+	user_headers = {
+		'Authorization': f"Bearer {session['user_access_token']}",
+		'Accept': 'application/vnd.github.v3+json'
+	}
+	
+	installations_url = "https://api.github.com/user/installations"
+	installations_response = requests.get(installations_url, headers=user_headers)
+	
+	installations_data = installations_response.json()
+	installations = installations_data.get('installations', [])
+	
+	# For each installation, get the list of repositories
+	for installation in installations:
+		repos_url = installation.get('repositories_url')
+		installation_token = get_installation_access_token(installation['id'])
+		
+		repos_headers = {
+			'Authorization': f"token {installation_token}",
+			'Accept': 'application/vnd.github.v3+json'
+		}
+		
+		repos_response = requests.get(repos_url, headers=repos_headers)
+		
+		if repos_response.status_code == 200:
+			repos_data = repos_response.json()
+			installation['repositories'] = repos_data.get('repositories', [])
+		else:
+			installation['repositories'] = []
+	
+	return render_template('select_installation.html', installations=installations)
+
+@app.route('/set-installation/<int:installation_id>')
+def set_installation(installation_id):
+	"""
+	Set the selected installation ID in the session
+	"""
+	session['installation_id'] = installation_id
+	
+	# Redirect to the originally requested URL if it exists
+	if 'redirect_after_install' in session:
+		redirect_url = session.pop('redirect_after_install')
+		return redirect(redirect_url)
+	
+	return redirect(url_for('annotate'))
+
+@app.route('/save', methods=['POST'])
+def save_changes():
+	"""
+	Save changes to GitHub by creating a new branch and PR
+	"""
+	if 'user_access_token' not in session:
+		flash("You must be logged in to save changes", "error")
+		return redirect(url_for('login', next=url_for('annotate')))
+		
+	if 'installation_id' not in session:
+		flash("No GitHub App installation selected", "error")
+		return redirect(url_for('select_installation'))
+		
+	if 'file_info' not in session:
+		flash("Session expired, please start again", "error")
+		return redirect(url_for('annotate'))
+	
+	file_info = session['file_info']
+	edited_content = request.form.get('content', '')
+	treeobj = ActivedopTree.from_str(edited_content)
+
+	senttok = [terminal.text if terminal.constituent != 'GAP' else '--' for terminal in treeobj.cgel_tree.terminals()]
+	sent = ["# sent = " + " ".join(senttok)]
+	# sent_id is the line from the original file that starts with '# sentid ='
+	sent_id = [line for line in file_info['original_content'].split('\n') if line.startswith('# sent_id =')]
+	# text_orig is the line from the original file that starts with '# text ='
+	text_orig = [line for line in file_info['original_content'].split('\n') if line.startswith('# text =')]
+	# tree_by is the line from the original file that starts with '# tree_by ='
+	tree_by = ['# tree_by = ' + request.form.get('tree_by', '[FIELD MISSING]')]
+
+	metadata_lines = sent_id + text_orig + sent + tree_by
+	edited_content = "\n".join(metadata_lines) + "\n" + edited_content
+	
+	branch_name = request.form.get('branch_name', f"edit-{file_info['path'].replace('/', '-')}")
+	commit_message = request.form.get('commit_message', f"Edit {file_info['path']}")
+	
+	try:
+		# Get installation token
+		installation_token = get_installation_access_token(session['installation_id'])
+		
+		# Headers for GitHub API requests
+		headers = {
+			'Authorization': f"token {installation_token}",
+			'Accept': 'application/vnd.github.v3+json'
+		}
+				
+		# Check if the app installation has push access
+		has_push_access = check_push_access(session)
+		
+		if not has_push_access:
+			flash("This GitHub App installation doesn't have write permissions for this repository", "error")
+			return redirect(url_for('from_git', github_url=f"https://github.com/{file_info['owner']}/{file_info['repo']}/blob/{file_info['branch']}/{file_info['path']}"))
+		
+		# Get the reference to the default branch
+		ref_url = f"https://api.github.com/repos/{file_info['owner']}/{file_info['repo']}/git/refs/heads/{file_info['branch']}"
+		ref_response = requests.get(ref_url, headers=headers)
+		
+		if ref_response.status_code != 200:
+			flash(f"Failed to get branch reference: {ref_response.status_code}", "error")
+			return redirect(url_for('annotate'))
+		
+		ref_data = ref_response.json()
+		source_sha = ref_data.get('object', {}).get('sha')
+		
+		# Create a new branch
+		new_ref_url = f"https://api.github.com/repos/{file_info['owner']}/{file_info['repo']}/git/refs"
+		new_ref_data = {
+			'ref': f"refs/heads/{branch_name}",
+			'sha': source_sha
+		}
+		
+		new_ref_response = requests.post(new_ref_url, headers=headers, json=new_ref_data)
+		
+		if new_ref_response.status_code == 422:  # Branch already exists
+			# TODO: If the branch already exists, confirm with a dialog window before overwriting.
+			flash(f"Branch '{branch_name}' already exists. Please choose a different name.", "error")
+			return redirect(url_for('from_git', github_url=f"https://github.com/{file_info['owner']}/{file_info['repo']}/blob/{file_info['branch']}/{file_info['path']}"))
+		
+		elif new_ref_response.status_code != 201:
+			flash(f"Failed to create new branch: {new_ref_response.status_code}", "error")
+			return redirect(url_for('annotate'))
+		
+		# Update the file with new content
+		update_url = f"https://api.github.com/repos/{file_info['owner']}/{file_info['repo']}/contents/{file_info['path']}"
+		
+		# Encode the file content as base64
+		content_bytes = edited_content.encode('utf-8')
+		base64_content = base64.b64encode(content_bytes).decode('utf-8')
+		
+		update_data = {
+			'message': commit_message,
+			'content': base64_content,
+			'sha': file_info['sha'],
+			'branch': branch_name
+		}
+		
+		update_response = requests.put(update_url, headers=headers, json=update_data)
+		
+		if update_response.status_code != 200 and update_response.status_code != 201:
+			flash(f"Failed to update file: {update_response.status_code}", "error")
+			return redirect(url_for('annotate'))
+		
+		# Create a pull request using user token for attribution
+		pr_url = f"https://api.github.com/repos/{file_info['owner']}/{file_info['repo']}/pulls"
+		pr_data = {
+			'title': f"Update {file_info['path']}",
+			'body': f"Created using the {GITHUB_APP_NAME} GitHub App",
+			'head': branch_name,
+			'base': file_info['branch']
+		}
+		
+		user_headers = {
+			'Authorization': f"Bearer {session['user_access_token']}",
+			'Accept': 'application/vnd.github.v3+json'
+		}
+		
+		pr_response = requests.post(pr_url, headers=user_headers, json=pr_data)
+		
+		if pr_response.status_code != 201:
+			# Fallback to installation token if user token fails
+			pr_response = requests.post(pr_url, headers=headers, json=pr_data)
+			if pr_response.status_code != 201:
+				flash(f"Failed to create pull request: {pr_response.status_code} - {pr_response.text}", "error")
+				return redirect(url_for('annotate'))
+		
+		pr_data = pr_response.json()
+		flash(f"Changes saved and PR created: {pr_data.get('html_url')}", "success")
+		return redirect(pr_data.get('html_url'))
+		
+	except Exception as e:
+		flash(f"Error saving changes: {str(e)}", "error")
+	
+	return redirect(url_for('from_git', github_url=f"https://github.com/{file_info['owner']}/{file_info['repo']}/blob/{file_info['branch']}/{file_info['path']}"))
+
+def generate_id():
+	import random
+	import string
+	id = None
+	# verify that the ID is unique 
+	db = getdb()
+	cur = db.execute(
+		'SELECT id FROM entries ORDER BY sentno ASC'
+	)
+	entries = cur.fetchall()
+	existing_ids = {entry[0] for entry in entries} | {entry[3] for entry in QUEUE}
+	while id is None or id in existing_ids:
+		id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+	return id
 
 def refreshqueue(username):
 	""""Ensures that user can view annotations of sentences not in the 'initpriorities' queue.
@@ -383,18 +803,7 @@ def main():
 def get_id():
 	"""Generate a unique 6-character hash ID for a direct entry sentence.
 	(Serves as a default ID in the direct entry dialogue window.)"""
-	import random
-	import string
-	id = None
-	# verify that the ID is unique 
-	db = getdb()
-	cur = db.execute(
-		'SELECT id FROM entries ORDER BY sentno ASC'
-	)
-	entries = cur.fetchall()
-	existing_ids = {entry[0] for entry in entries} | {entry[3] for entry in QUEUE}
-	while id is None or id in existing_ids:
-		id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+	id = generate_id()
 	return jsonify({'id': id})
 
 @app.route('/annotate/direct_entry', methods=['POST'])
@@ -533,16 +942,17 @@ def logout():
 	return redirect(url_for('main'))
 
 
-@app.route('/annotate/annotate/', defaults={'sentno': -1})
-@app.route('/annotate/annotate/<int:sentno>')
+@app.route('/annotate/annotate/', defaults={'sentno': -1, 'github_url': None})
+@app.route('/annotate/annotate/<int:sentno>', defaults={'github_url': None})
+@app.route('/annotate/annotate/<int:sentno>/<path:github_url>')
 @loginrequired
-def annotate(sentno):
+def annotate(sentno, github_url):
 	"""Serve the main annotation page for a sentence."""
 	username = session['username']
 	refreshqueue(username)
 	if sentno == -1:
 		sentno = firstunannotated(username)
-		redirect(url_for('annotate', sentno=sentno))
+		return redirect(url_for('annotate', sentno=sentno, github_url=github_url))
 	session['actions'] = [0, 0, 0, 0, 0, 0, 0, time()]
 	lineno = QUEUE[sentno - 1][0]
 	id = QUEUE[sentno - 1][3]
@@ -552,7 +962,7 @@ def annotate(sentno):
 	if annotation is not None: # a tree is saved in the database
 		# go directly to edit mode
 		return redirect(url_for(
-				'edit', sentno=sentno, annotated=1, n=n))
+				'edit', sentno=sentno, annotated=1, n=n, github_url=github_url))
 	# render annotate mode: browsing parser outputs for the sentence
 	return render_template(
 			'annotate.html',
@@ -562,6 +972,7 @@ def annotate(sentno):
 			totalsents=len(SENTENCES),
 			numannotated=numannotated(username),
 			annotationhelp=ANNOTATIONHELP,
+			github_url=github_url,
 			sent=' '.join(senttok))	# includes any gaps
 
 @app.route('/undoaccept', methods=['POST'])
@@ -592,10 +1003,11 @@ def parse():
 	"""Display parse. To be invoked by an AJAX call."""
 	sentno = int(request.json.get('sentno'))  # 1-indexed
 	sent = SENTENCES[QUEUE[sentno - 1][0]]
+	github_url = request.json.get('github_url', None)
 	username = session['username']
 	require = request.json.get('require', '')
 	block = request.json.get('block', '')
-	urlprm = dict(sentno=sentno)
+	urlprm = dict(sentno=sentno,github_url=github_url)
 	if require and require != '':
 		urlprm['require'] = require
 	if block and block != '':
@@ -731,6 +1143,28 @@ def showderiv():
 def edit():
 	"""Edit tree manually."""
 	sentno = int(request.args.get('sentno'))  # 1-indexed
+	github_url = request.args.get('github_url', None)
+	file_path = None
+	has_push_access = False
+	orig_content = session.get('file_info', {}).get('original_content', None)
+	# tree_by is the line in orig_content that starts with '# tree_by ='
+	if orig_content:
+		tree_by = [line for line in orig_content.split('\n') if line.startswith('# tree_by =')]
+		if tree_by:
+			tree_by = tree_by[0].split('=')[1].strip()
+	else:
+		tree_by = ''
+
+	# process the URL
+	if github_url and github_url != 'None':
+		github_url = unquote(github_url)
+		try:
+			_, _, _, file_path = parse_github_url(github_url)
+			has_push_access = check_push_access(session)
+		except ValueError as e:
+			flash(f"Error: {str(e)}", "error")
+			return redirect(url_for('annotate'))
+	
 	lineno = QUEUE[sentno - 1][0]
 	id = QUEUE[sentno - 1][3]
 	sent = SENTENCES[lineno]
@@ -780,6 +1214,9 @@ def edit():
 			functiontags=sorted(t for t in (workerattr('functiontags')
 				| set(app.config['FUNCTIONTAGWHITELIST'])) if '}' not in t and '@' not in t and t != "p"),
 			morphtags=sorted(workerattr('morphtags')),
+			has_push_access=has_push_access,
+			file_path=file_path,
+			tree_by=tree_by,
 			annotationhelp=ANNOTATIONHELP,
 			rows=rows, cols=100,
 			msg=msg)
