@@ -420,7 +420,7 @@ function picksubtree(n) {
 }
 
 function drag(ev) {
-	ev.originalEvent.dataTransfer.setData("text", $(ev.target).data('id'));
+	(ev.originalEvent || ev).dataTransfer.setData("text", ev.target.getAttribute('data-id'));
 }
 
 function allowDrop(ev) {
