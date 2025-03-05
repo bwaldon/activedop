@@ -1,192 +1,251 @@
+<!-- edittree.html -->
 {% extends "layout.html" %}
-{% block body %}
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.34.0/codemirror.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.34.0/codemirror.min.js" type="text/javascript" charset="utf=8"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.34.0/addon/edit/matchbrackets.min.js" type="text/javascript" charset="utf=8"></script>
 
-<div class="trash" style="position: fixed; top: 0; right: 0"
-	data-id=deletenode 
-	ondragover="allowDropTrash(event);" ondrop="dropTrash(event);" ondragleave="dragLeaveTrash(event);">🗑️</div>
-
-<div>
-	<a href="{{ prevlink }}">prev</a>
-	| {{ sentno }} / {{ totalsents }}
-	| <a href="{{ nextlink }}">next</a>
-	| <a href="{{ unextlink }}">next unannotated</a>
-	| {{ (100 * numannotated  / totalsents)|round(1) }} % done <progress value="{{ numannotated }}" max="{{ totalsents }}"></progress>
-	| <a href="/annotate/context/{{ lineno }}#{{ lineno }}">context</a>
-	<!-- | <a href="/annotate/export" title="all saved annotations">export all</a> -->
-	| <a href="#" onclick="document.location='/annotate/download_pdf' + '?tree=' + encodeURIComponent(editor.getValue());" title="download pdf">export pdf of tree</a>
-	| <a href="#" onclick="document.location='/annotate/get_data_psv'" title="download as psv">export all data as psv</a>
-	<!-- | <a href="#" onclick="document.location='/annotate/exportcgeltree' + '?tree=' + encodeURIComponent(editor.getValue());" title=".cgel format of tree currently in text editor">export CGEL tree</a> -->
-	| <a href="#" onclick="addSentence()">add a sentence</a>
-	| <a href="javascript: toggle('help');">help</a>
-	| {% if not session.username -%}
-	<a href="{{ url_for('login') }}">log in</a>
-	{%- else -%}
-	<a href="{{ url_for('logout') }}">log out</a>
-	{%- endif %}
-	<br>
-	<input type=hidden id=sentid value="{{ id }}" />
-	<input type=hidden id=sentno value="{{ sentno }}" />
-	{{ senttok }}
-</div>
-{{ msg }}
-
-{%block script %}
+{% block extrahead %}
 <script>
-	/*goback() is called by the Go back button, which is passed into this page 
-	from the above jinja {{ msg }} tag */
-	function goback() {
-		var sentno = $('#sentno').val();
-		window.location.href = '/annotate/annotate/' + sentno;
-	}
-	function undoAccept() {
-		var sentid = $('#sentid').val();
-		var sentno = $('#sentno').val();
-		$.ajax({
-			method: 'POST',
-			url: '/undoaccept',
-			headers: {
-				"Content-Type":'application/json'
-			},
-			data: JSON.stringify({sentid: sentid})
-		}).then(data => {
-			console.log('Success', data);
-			$(location).attr('href', '/annotate/annotate/' + sentno);
-		})
-		.catch((error) => {
-			console.error('Error:', error);
-		});
-	}
+  // Define editor globally
+  var editor;
+  var oldtree = '';  // used to track changes in the text area
+  
+  // Ensure functions are defined in global scope
+  window.submitForm = function() {
+    document.getElementById('content-input').value = editor.getValue();
+    document.getElementById('save-form').submit();
+  };
+  
+  window.goback = function() {
+    var sentno = document.getElementById('sentno').value;
+    window.location.href = '/annotate/annotate/' + sentno;
+  };
+  
+  window.undoAccept = function() {
+    var sentid = document.getElementById('sentid').value;
+    var sentno = document.getElementById('sentno').value;
+    
+    fetch('/undoaccept', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({sentid: sentid})
+    })
+    .then(response => response.json())
+    .then(data => {
+      console.log('Success', data);
+      window.location.href = '/annotate/annotate/' + sentno;
+    })
+    .catch(error => {
+      console.error('Error:', error);
+    });
+  };
+
+  // Initialize on document ready
+  document.addEventListener('DOMContentLoaded', function() {
+    // Initialize CodeMirror after DOM is fully loaded
+    setTimeout(function() {
+      var textArea = document.querySelector('form[name="queryform"] textarea[name="tree"]');
+      if (textArea) {
+        editor = CodeMirror.fromTextArea(textArea, {
+          indentWithTabs: true,
+          lineNumbers: true,
+          matchBrackets: true,
+        });
+        
+        // Make editor globally accessible
+        window.editor = editor;
+        
+        // Now that editor is initialized, we can call replacetree
+        if (typeof replacetree === 'function') {
+          replacetree();
+        } else {
+          console.error("replacetree function not found. Check if script.js is properly loaded.");
+        }
+      } else {
+        console.error("Textarea not found");
+      }
+    }, 100); // Small delay to ensure DOM is ready
+  });
 </script>
 {% endblock %}
 
-<div id=help style="display: none;">
-	<ul>
-	<li>To change a label, click on a node to select a different label from a list.
-		The syntactic category and the function tag (before and after the dash "-")
-		must be selected separately by clicking on the corresponding part of the label.
-	<li>Re-attach a node by dragging and dropping it on a new parent. This can be used to created discontinuous constituents.
-	<li>Similarly, nodes can be removed and new ones added by dragging to/from below the tree.
-	<li>Right-click on a node to re-parse a subtree
-		and replace it by one from the resulting list.
-	<li>Finally, the bracketing can be edited manually in the text box below the tree;
-		press "validate" to update the tree.
-		Whitespace is ignored. Each token must have a dedicated POS tag.
-		Consult the list at the bottom specifying valid labels for constituents and POS tags, respectively.
-</ul>
-<pre>{{ annotationhelp }}</pre>
+{% block body %}
+<!-- Include the shared top menu with pdf_export variable set -->
+{% set pdf_export = true %}
+{% include "_top_menu.html" %}
+
+<!-- Message if provided -->
+{% if msg %}
+<div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded">
+  {{ msg }}
+</div>
+{% endif %}
+
+<!-- Main Tree Editing Area -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  <!-- Left Column: Tree Display -->
+  <div class="lg:col-span-2">
+    <!-- Fixed Trash Icon -->
+    <div class="fixed top-4 right-4 w-10 h-10 flex items-center justify-center bg-red-100 text-red-700 rounded-md shadow hover:bg-red-200 cursor-pointer z-10">
+      <span class="text-xl"
+      data-id="deletenode"
+      ondragover="allowDropTrash(event);"
+      ondrop="dropTrash(event);" 
+      ondragleave="dragLeaveTrash(event);">🗑️</span>
+    </div>
+    
+    <!-- Hidden IDs -->
+    <input type="hidden" id="sentid" value="{{ id }}" />
+    <input type="hidden" id="sentno" value="{{ sentno }}" />
+    
+    <!-- Current Sentence Display -->
+    <div class="mb-4 p-3 bg-gray-50 border border-gray-200 rounded">
+      {{ senttok }}
+    </div>
+    
+    <!-- Validator Output -->
+    <div class="mb-4">
+      <h3 class="text-sm font-medium text-gray-700 mb-2">Validation Output:</h3>
+      <pre id="validatorOut" class="p-3 bg-gray-50 border border-gray-200 rounded h-36 overflow-auto"></pre>
+    </div>
+    
+    <!-- Tree Display -->
+    <div class="mb-4">
+      <h3 class="text-sm font-medium text-gray-700 mb-2">Tree Structure:</h3>
+      <pre id="tree" class="p-3 bg-gray-50 border border-gray-200 rounded overflow-auto">[...wait for it...]</pre>
+    </div>
+    
+    <!-- N-Best List (Hidden by Default) -->
+    <div id="nbest" class="hidden">
+      <!-- Content will be dynamically generated -->
+    </div>
+  </div>
+  
+  <!-- Right Column: Tools and Editor -->
+  <div class="lg:col-span-1">
+    <!-- Help Section (Hidden by Default) -->
+    <div id="help" class="hidden mb-4 p-3 bg-gray-50 border border-gray-200 rounded">
+      <h3 class="text-base font-medium text-gray-900 mb-2">Tree Editing Help</h3>
+      <ul class="list-disc pl-6 space-y-1 text-sm">
+        <li>To change a label, click on a node to select a different label from a list.</li>
+        <li>Re-attach a node by dragging and dropping it on a new parent.</li>
+        <li>Nodes can be removed and new ones added by dragging.</li>
+        <li>Right-click on a node to re-parse a subtree.</li>
+        <li>Edit the bracketing manually in the text box below.</li>
+      </ul>
+      <pre class="mt-3 p-2 bg-gray-100 text-xs rounded overflow-x-auto">{{ annotationhelp }}</pre>
+    </div>
+    
+    <!-- Available Labels -->
+    <div id="info" class="mb-4 p-3 bg-white border border-gray-200 rounded">
+      <div class="mb-3">
+        <h3 class="text-sm font-medium text-gray-700 mb-2">Constituent Labels:</h3>
+        <div class="flex flex-wrap gap-1">
+          {% for label in phrasallabels -%}
+            {% if label != 'ROOT' -%}
+            <span class="n px-2 py-1 bg-blue-100 text-blue-800 rounded text-sm cursor-move" 
+                  data-id="newlabel_{{ label }}-Head" 
+                  draggable="true" 
+                  ondragstart="drag(event);">{{ label }}</span> 
+            {%- endif %}
+          {% endfor -%}
+        </div>
+      </div>
+      
+      <div class="mb-3">
+        <h3 class="text-sm font-medium text-gray-700 mb-2">POS Tags:</h3>
+        <div class="flex flex-wrap gap-1">
+          {% for label in poslabels -%}
+          <span class="p px-2 py-1 bg-green-100 text-green-800 rounded text-sm">{{ label }}</span>
+          {% endfor -%}
+        </div>
+      </div>
+      
+      {% if functiontags -%}
+      <div>
+        <h3 class="text-sm font-medium text-gray-700 mb-2">Function Tags:</h3>
+        <div class="flex flex-wrap gap-1">
+          {% for tag in functiontags -%}
+          <span class="f px-2 py-1 bg-amber-100 text-amber-800 rounded text-sm">{{ tag }}</span>
+          {% endfor -%}
+        </div>
+      </div>
+      {%- endif %}
+    </div>
+    
+    <!-- Tree Edit Form -->
+    <div id="edit" class="mb-4">
+      <form name="queryform" onSubmit="event.preventDefault(); if(typeof replacetree === 'function') { replacetree(); } else { alert('replacetree function not found'); } return false;">
+        <div class="mb-3">
+          <label for="tree" class="block text-sm font-medium text-gray-700 mb-1">Edit Tree Structure:</label>
+          <textarea name="tree" id="treeTextarea" rows="{{ rows }}" cols="{{ cols }}" class="w-full p-2 border border-gray-300 rounded font-mono">{{ treestr }}</textarea>
+        </div>
+        <input type="hidden" name="sentno" value="{{ sentno }}" />
+        <input type="hidden" name="senttok" value="{{ senttok }}" />
+        <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+          Validate
+        </button>
+      </form>
+    </div>
+    
+    <!-- Save Form -->
+    <form id="save-form" action="{{ url_for('save_changes') }}" method="post" class="bg-white p-4 border border-gray-200 rounded">
+      <input type="hidden" id="content-input" name="content">
+      
+      {% if has_push_access %}
+      <div class="space-y-3 mb-4">
+        <div>
+          <label for="branch_name" class="block text-sm font-medium text-gray-700 mb-1">New Branch Name:</label>
+          <input type="text" class="w-full p-2 border border-gray-300 rounded" 
+                 id="branch_name" name="branch_name" 
+                 value="edit-{{ file_path.replace('/', '-') }}" required>
+        </div>
+        
+        <div>
+          <label for="commit_message" class="block text-sm font-medium text-gray-700 mb-1">Commit Message:</label>
+          <input type="text" class="w-full p-2 border border-gray-300 rounded" 
+                 id="commit_message" name="commit_message" 
+                 value="Edit {{ file_path }}" required>
+        </div>
+        
+        <div>
+          <label for="tree_by" class="block text-sm font-medium text-gray-700 mb-1">Tree by:</label>
+          <input type="text" class="w-full p-2 border border-gray-300 rounded" 
+                 id="tree_by" name="tree_by" 
+                 value="{{ tree_by }}" required>
+        </div>
+      </div>
+      
+      <button type="button" class="w-full px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700" 
+              onclick="submitForm()">
+        Save Changes & Create PR
+      </button>
+      {% else %}
+      <div class="p-3 bg-yellow-50 border border-yellow-300 rounded text-sm">
+        <p class="font-medium">Note:</p>
+        <p>This GitHub App installation doesn't have write permissions to this repository. 
+           You can edit the file, but you won't be able to create a PR. 
+           Please make sure the app has the necessary permissions.</p>
+      </div>
+      {% endif %}
+    </form>
+  </div>
 </div>
 
-<pre id=validatorOut style="height: 144px; width: auto; overflow: scroll;"></pre>
-
-<pre id=tree>
-[...wait for it...]
-</pre>
-
-<div id=nbest style="display: none; ">
-</div>
-
-<div id=info>
-	<span class="trash" data-id=deletenode
-		ondragover="allowDropTrash(event);" ondrop="dropTrash(event);" ondragleave="dragLeaveTrash(event);">🗑️</span>
-	<div>Constituent labels (drag and drop on a parent to add a new node; function will default to Head):
-		{% for label in phrasallabels -%}
-			{% if label != 'ROOT' -%}
-		<span class=n data-id="newlabel_{{ label }}-Head" style="cursor: move; " draggable="true" ondragstart="drag(event);">{{ label }}</span> 
-			{%- endif %}
-		{% endfor -%}
-	</div>
-	<div>POS tags: <span class=p>{{ poslabels|join(" ") }}</span></div>
-	{% if functiontags -%}
-	<div>Function tags: <span class=f>{{ functiontags|join(" ") }}</span></div>
-	{%- endif %}
-</div>
-
-<div id=edit>
-	<form name=queryform onSubmit="event.preventDefault(); replacetree(); return false; ">
-		<textarea name=tree rows={{ rows }} cols={{ cols }}>
-{{ treestr }}
-</textarea>
-		<input type=hidden name=sentno value="{{ sentno }}" />
-		<input type=hidden name=senttok value="{{ senttok }}" />
-		<input type=submit value=Validate>
-	</form>
-</div>
-
+<!-- Label Pickers -->
 {% for a, labels in (
-		('phrasal', phrasallabels),
-		('pos', poslabels),
-		('function', functiontags),
-		('morph', morphtags))
-		%}
-<div id="{{ a }}picker" class=picker>
-	<a href="javascript: pick('{{ a }}', null)">(cancel)</a><br>
-	{% if a == 'function' -%}
-	<a href="javascript: pick('{{ a }}', '')">(none)</a><br>
-	{%- endif %}
-	{% for label in labels -%}
-	<a href="javascript: pick('{{ a }}', '{{ label }}')">{{ label }}</a><br>
-	{% endfor -%}
+    ('phrasal', phrasallabels),
+    ('pos', poslabels),
+    ('function', functiontags),
+    ('morph', morphtags))
+    %}
+<div id="{{ a }}picker" class="picker fixed hidden z-20 bg-white p-2 border border-gray-300 rounded shadow-lg max-h-64 overflow-y-auto">
+  <a href="javascript: pick('{{ a }}', null)" class="block px-2 py-1 text-sm hover:bg-gray-100 rounded">(cancel)</a>
+  {% if a == 'function' -%}
+  <a href="javascript: pick('{{ a }}', '')" class="block px-2 py-1 text-sm hover:bg-gray-100 rounded">(none)</a>
+  {%- endif %}
+  {% for label in labels -%}
+  <a href="javascript: pick('{{ a }}', '{{ label }}')" class="block px-2 py-1 text-sm hover:bg-gray-100 rounded">{{ label }}</a>
+  {% endfor -%}
 </div>
 {% endfor %}
-
-<script>
-	var oldtree = '';  // used to track changes in the text area
-	window.onload = replacetree;
-
-	var editor = CodeMirror.fromTextArea(
-			document.queryform.tree,
-			{
-				indentWithTabs: true,
-				lineNumbers: true,
-				matchBrackets: true,
-			});
-			
-	function submitForm() {
-        document.getElementById('content-input').value = editor.getValue();
-        document.getElementById('save-form').submit();
-    }
-</script>
-<form id="save-form" action="{{ url_for('save_changes') }}" method="post">
-    <input type="hidden" id="content-input" name="content">
-    
-    <div class="row g-3 mb-3">
-        {% if has_push_access %}
-        <div class="col-md-4">
-            <label for="branch_name" class="form-label">New Branch Name</label>
-            <input type="text" class="form-control" id="branch_name" name="branch_name" 
-                   value="edit-{{ file_path.replace('/', '-') }}" required>
-        </div>
-        <div class="col-md-8">
-            <label for="commit_message" class="form-label">Commit Message</label>
-            <input type="text" class="form-control" id="commit_message" name="commit_message" 
-                   value="Edit {{ file_path }}" required>
-        </div>
-		<div class = "col-md-8">
-			<label for="tree_by" class="form-label">Tree by:</label>
-			<input type="text" class="form-control" id="tree_by" name="tree_by" 
-				value="{{ tree_by }}" required>
-		</div>
-        {% endif %}
-    </div>
-    
-    <div class="row mb-5">
-        <div class="col-12">            
-            {% if has_push_access %}
-            <button type="button" class="btn btn-primary" onclick="submitForm()">
-                Save Changes & Create PR
-            </button>
-            {% else %}
-            <div class="alert alert-warning" role="alert">
-                <strong>Note:</strong> This GitHub App installation doesn't have write permissions to this repository. 
-                You can edit the file, but you won't be able to create a PR. 
-                Please make sure the app has the necessary permissions.
-            </div>
-            {% endif %}
-        </div>
-    </div>
-</form>
-
 {% endblock %}
