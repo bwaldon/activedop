@@ -218,7 +218,7 @@ def from_git(github_url):
 	"""
 	# Check if user is logged in - if not, redirect to login with return URL
 	if 'user_access_token' not in session:
-		return redirect(url_for('login', next=request.url))
+		return redirect(url_for('github_login', next=request.url))
 	
 	# Check if the installation ID is present in the session
 	if 'installation_id' not in session:
