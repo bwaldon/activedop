@@ -1,0 +1,66 @@
+<!-- templates/select_installation.html -->
+{% extends "layout.html" %}
+{% block body %}
+
+<div class="container py-4">
+    <h1 class="mb-4">Select GitHub App Installation</h1>
+    
+    <p class="mb-4">Select an installation of the GitHub App to use for editing files.</p>
+    
+    {% if installations %}
+        <div class="row row-cols-1 row-cols-md-2 g-4">
+            {% for installation in installations %}
+                <div class="col">
+                    <div class="card h-100 installation-card" onclick="window.location='{{ url_for('set_installation', installation_id=installation.id) }}'">
+                        <div class="card-body">
+                            <div class="d-flex align-items-center mb-3">
+                                <img src="{{ installation.account.avatar_url }}" alt="Avatar" 
+                                     class="me-3" style="width: 48px; height: 48px; border-radius: 50%;">
+                                <div>
+                                    <h5 class="card-title mb-0">{{ installation.account.login }}</h5>
+                                    <p class="text-muted mb-0">{{ installation.account.type }}</p>
+                                </div>
+                            </div>
+                            <p class="card-text">
+                                Installation ID: {{ installation.id }}<br>
+                                <!-- {% if installation.repository_selection == 'selected' %}
+                                    Selected repositories ({{ installation.repository_selection_count if installation.repository_selection_count is defined else 'N/A' }})
+                                {% else %}
+                                    All repositories
+                                {% endif %} -->
+                            </p>
+                            
+                            {% if installation.repositories %}
+                                <div class="mt-3">
+                                    <h6>Repositories:</h6>
+                                    <ul class="list-group">
+                                        {% for repo in installation.repositories[:5] %}
+                                            <li class="list-group-item">{{ repo.name }}</li>
+                                        {% endfor %}
+                                        {% if installation.repositories|length > 5 %}
+                                            <li class="list-group-item text-muted">
+                                                And {{ installation.repositories|length - 5 }} more...
+                                            </li>
+                                        {% endif %}
+                                    </ul>
+                                </div>
+                            {% endif %}
+                        </div>
+                        <div class="card-footer bg-transparent">
+                            <button class="btn btn-outline-primary w-100">Select Installation</button>
+                        </div>
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="alert alert-warning">
+            <h5 class="alert-heading">No installations found!</h5>
+            <p>This GitHub App hasn't been installed on any repositories yet.</p>
+            <hr>
+            <p class="mb-0">Follow the <a href="{{ url_for('setup') }}">setup instructions</a> to install the app on your GitHub account or organization.</p>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}
+
