@@ -55,10 +55,10 @@
         </div>
     {% else %}
         <div class="alert alert-warning">
+            <hr>
             <h5 class="alert-heading">No installations found!</h5>
             <p>This GitHub App hasn't been installed on any repositories yet.</p>
-            <hr>
-            <p class="mb-0">Follow the <a href="{{ url_for('setup') }}">setup instructions</a> to install the app on your GitHub account or organization.</p>
+            <p class="mb-0">To use the app, first install it on your GitHub account or organization.</p>
         </div>
     {% endif %}
 </div>

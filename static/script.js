@@ -67,11 +67,23 @@ function nohighlightdep() {
 	});
 }
 
+// Track the current parse request
+var currentParseRequest = null;
+
+// Global flag to track if we're navigating away
+var isNavigatingAway = false;
+
 function annotate() {
 	/* function to send request to parse a sentence and append the result to
 	 * the current document. */
 	var div = $('#result');
 	div.html('[...wait for it...]');
+
+	// Cancel any existing parse request
+	if (currentParseRequest) {
+		currentParseRequest.abort();
+		currentParseRequest = null;
+	}
 
 	data = { sent: document.queryform.sent.value,
 			sentno: document.queryform.sentno.value,
@@ -88,18 +100,25 @@ function annotate() {
 		$('#constraintdiv').show();
 	}
 
-	// Make the AJAX GET request using jQuery
-	$.ajax({
+	currentParseRequest = $.ajax({
 		url: '/annotate/parse',
 		type: "POST",
 		contentType: 'application/json',
 		data: JSON.stringify(data),
 		success: function(response) {
+			currentParseRequest = null;
 			div.html(response);
 			registertoggleable(div[0]);
 		},
 		error: function(jqXHR, textStatus, errorThrown) {
-			console.error('Error: ' + jqXHR.status);
+			currentParseRequest = null;
+			// Only show error if this wasn't an abort
+			if (textStatus !== 'abort') {
+				console.error('Error: ' + jqXHR.status);
+				div.html('Error: ' + errorThrown + '. Try reloading the page.');
+			} else {
+				console.log('Parse request cancelled');
+			}
 		}
 	});
 }
@@ -189,6 +208,36 @@ function togglespan(flag, pos, elem) {
 
 	return false;  // do not handle click further
 }
+
+// Handle page navigation events
+$(window).on('beforeunload', function() {
+	isNavigatingAway = true;
+	// Cancel any pending parse requests
+	if (currentParseRequest) {
+		currentParseRequest.abort();
+		currentParseRequest = null;
+		
+		// Send a cancellation request to the server
+		navigator.sendBeacon('/annotate/cancel_parse', JSON.stringify({
+			username: document.querySelector('body').getAttribute('data-username')
+		}));
+	}
+});
+
+// Also cancel requests when clicking navigation links
+$(document).on('click', 'a[href^="/annotate/"]', function() {
+	console.log('Navigating away from the page');
+	isNavigatingAway = true;
+	if (currentParseRequest) {
+		currentParseRequest.abort();
+		currentParseRequest = null;
+		
+		// Send the cancellation beacon
+		navigator.sendBeacon('/annotate/cancel_parse', JSON.stringify({
+			username: document.querySelector('body').getAttribute('data-username')
+		}));
+	}
+});
 
 function registertoggleable(div) {
 	var elems = $(div).find('.n');
@@ -545,6 +594,26 @@ function accept() {
 			console.error('Error: ' + jqXHR.status);
 		}
 	});
+}
+
+function undoAccept() {
+	$.ajax({
+		url: '/undoaccept',
+		type: 'POST',
+		contentType: 'application/json',
+		data: JSON.stringify({
+			sentid: $('#sentno').val()
+		}),
+		success: function(response) {
+			if (response.success) {
+				window.location.reload();
+			}
+		}
+	});
+}
+
+function goback() {
+	window.history.back();
 }
 
 function addSentence() {

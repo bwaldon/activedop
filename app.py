@@ -41,7 +41,7 @@ from time import time
 from datetime import datetime
 from functools import wraps
 from collections import OrderedDict
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, CancelledError
 from concurrent.futures.process import BrokenProcessPool
 from urllib.parse import urlparse, urlencode, urljoin, unquote
 from flask import (Flask, Markup, Response, jsonify, request, session, g, flash, abort,
@@ -66,6 +66,7 @@ from workerattr import workerattr
 from activedoptree import ActivedopTree, LABELRE, is_punct_label, cgel_to_ptree
 from gh_helpers import get_installation_access_token, parse_github_url, check_push_access
 sys.path.append('./cgel')
+from threading import Lock
 try:
 	import cgel
 	from tree2tex import trees2tex
@@ -104,6 +105,8 @@ app.config.update(
 		AMBIG_SYM={}, # 'ambiguous' symbols that can be punctuation or something else depending on context
 		INITIAL_PUNCT_LABELS={}, # pos-function labels for punctuation tokens associated with their following non-punctuation tokens
 		WORKERS={},  # dict mapping username to process pool
+		ACTIVE_PARSES={},  # Track active parse requests by username
+		ACTIVE_PARSES_LOCK=Lock(),  # Lock for thread-safe access
 		)
 app.config.from_pyfile('settings.cfg', silent=True)
 app.config.from_envvar('FLASK_SETTINGS', silent=True)
@@ -148,6 +151,16 @@ def github_login():
 		f"&redirect_uri={url_for('github_callback', _external=True)}"
 		f"&state={state}"
 	)
+
+@app.route('/github_logout')
+def github_logout():
+	"""
+	Log out the user by clearing the user access token
+	"""
+	session.pop('user_access_token', None)
+	session.pop('user_login', None)
+	flash("Logged out of GitHub", "success")
+	return redirect(url_for('annotate'))
 
 @app.route('/github_callback')
 def github_callback():
@@ -284,13 +297,13 @@ def from_git(github_url):
 			treeobj = ActivedopTree.from_str(treestr)
 			senttok = treeobj.senttok
 			sentno = 1
-			username = "GitHubUser"
+			username = session['username']
 			lineno = 1
 			rows = max(5, treeobj.treestr().count('\n') + 1)
 			msg = ""
 			id = generate_id()
 			SENTENCES.insert(0, " ".join(senttok))
-			refreshqueue(session['username'])
+			refreshqueue(username)
 			return render_template('edittree.html',
 				prevlink=('/annotate/annotate/%d' % (sentno - 1))
 					if sentno > 1 else '/annotate/annotate/%d' % (len(SENTENCES)),
@@ -310,6 +323,9 @@ def from_git(github_url):
 				rows=rows, cols=100,
 				has_push_access=has_push_access,
 				file_path=file_path,
+				owner=owner,
+				repo_name=repo_name,
+				source_branch=branch,
 				tree_by=tree_by,
 				msg=msg)
 		else:
@@ -385,40 +401,67 @@ def set_installation(installation_id):
 @app.route('/save', methods=['POST'])
 def save_changes():
 	"""
-	Save changes to GitHub by creating a new branch and PR
+	Save changes to GitHub by creating a new branch or updating an existing one
 	"""
 	if 'user_access_token' not in session:
-		flash("You must be logged in to save changes", "error")
-		return redirect(url_for('login', next=url_for('annotate')))
+		return jsonify({
+			'status': 'error',
+			'message': "You must be logged in to save changes"
+		}), 401
 		
 	if 'installation_id' not in session:
-		flash("No GitHub App installation selected", "error")
-		return redirect(url_for('select_installation'))
+		return jsonify({
+			'status': 'error',
+			'message': "No GitHub App installation selected"
+		}), 400
 		
-	if 'file_info' not in session:
-		flash("Session expired, please start again", "error")
-		return redirect(url_for('annotate'))
-	
-	file_info = session['file_info']
-	edited_content = request.form.get('content', '')
-	treeobj = ActivedopTree.from_str(edited_content)
+	# Make file_info optional
+	file_info = session.get('file_info', {})
+	edited_content = request.json.get('content', '')
+	file_path = request.json.get('file_path', '')
+	source_branch = request.json.get('source_branch', 'main')
+	owner = request.json.get('owner', '')
+	repo_name = request.json.get('repo_name', '')
 
-	senttok = [terminal.text if terminal.constituent != 'GAP' else '--' for terminal in treeobj.cgel_tree.terminals()]
-	sent = ["# sent = " + " ".join(senttok)]
-	# sent_id is the line from the original file that starts with '# sentid ='
-	sent_id = [line for line in file_info['original_content'].split('\n') if line.startswith('# sent_id =')]
-	# text_orig is the line from the original file that starts with '# text ='
-	text_orig = [line for line in file_info['original_content'].split('\n') if line.startswith('# text =')]
-	# tree_by is the line from the original file that starts with '# tree_by ='
-	tree_by = ['# tree_by = ' + request.form.get('tree_by', '[FIELD MISSING]')]
-
-	metadata_lines = sent_id + text_orig + sent + tree_by
-	edited_content = "\n".join(metadata_lines) + "\n" + edited_content
-	
-	branch_name = request.form.get('branch_name', f"edit-{file_info['path'].replace('/', '-')}")
-	commit_message = request.form.get('commit_message', f"Edit {file_info['path']}")
+	if not file_path:
+		return jsonify({
+			'status': 'error',
+			'message': "File path is required"
+		}), 400
 	
 	try:
+		treeobj = ActivedopTree.from_str(edited_content)
+
+		senttok = [terminal.text if terminal.constituent != 'GAP' else '--' for terminal in treeobj.cgel_tree.terminals()]
+		sent = ["# sent = " + " ".join(senttok)]
+		# Get original content from file_info if available, otherwise use empty string
+		original_content = file_info.get('original_content', '')
+		
+		# sent_id is the line from the original file that starts with '# sentid ='
+		sent_id = [line for line in original_content.split('\n') if line.startswith('# sent_id =')] if original_content else []
+		# text_orig is the line from the original file that starts with '# text ='
+		text_orig = [line for line in original_content.split('\n') if line.startswith('# text =')] if original_content else []
+		# tree_by is the line from the original file that starts with '# tree_by ='
+		tree_by = ['# tree_by = ' + request.json.get('tree_by', '[FIELD MISSING]')]
+
+		metadata_lines = sent_id + text_orig + sent + tree_by
+		edited_content = "\n".join(metadata_lines) + "\n" + edited_content
+		
+		branch_name = request.json.get('branch_name', '').strip()
+		commit_message = request.json.get('commit_message', '').strip()
+
+		if not commit_message or len(commit_message) == 0:
+			return jsonify({
+				'status': 'error',
+				'message': "Commit message is required"
+			}), 400
+
+		if not branch_name or len(branch_name) == 0:
+			return jsonify({
+				'status': 'error',
+				'message': "Branch name is required"
+			}), 400
+		
 		# Get installation token
 		installation_token = get_installation_access_token(session['installation_id'])
 		
@@ -432,90 +475,113 @@ def save_changes():
 		has_push_access = check_push_access(session)
 		
 		if not has_push_access:
-			flash("This GitHub App installation doesn't have write permissions for this repository", "error")
-			return redirect(url_for('from_git', github_url=f"https://github.com/{file_info['owner']}/{file_info['repo']}/blob/{file_info['branch']}/{file_info['path']}"))
+			return jsonify({
+				'status': 'error',
+				'message': "This GitHub App installation doesn't have write permissions for this repository"
+			}), 403
 		
 		# Get the reference to the default branch
-		ref_url = f"https://api.github.com/repos/{file_info['owner']}/{file_info['repo']}/git/refs/heads/{file_info['branch']}"
+		ref_url = f"https://api.github.com/repos/{owner}/{repo_name}/git/refs/heads/{source_branch}"
 		ref_response = requests.get(ref_url, headers=headers)
 		
 		if ref_response.status_code != 200:
-			flash(f"Failed to get branch reference: {ref_response.status_code}", "error")
-			return redirect(url_for('annotate'))
+			return jsonify({
+				'status': 'error',
+				'message': f"Failed to get branch reference: {ref_response.status_code}"
+			}), 500
 		
 		ref_data = ref_response.json()
 		source_sha = ref_data.get('object', {}).get('sha')
 		
-		# Create a new branch
-		new_ref_url = f"https://api.github.com/repos/{file_info['owner']}/{file_info['repo']}/git/refs"
-		new_ref_data = {
-			'ref': f"refs/heads/{branch_name}",
-			'sha': source_sha
-		}
+		overwrite = request.json.get('overwrite', False)
+		file_sha = None  # We'll get the file SHA dynamically instead of using file_info
 		
-		new_ref_response = requests.post(new_ref_url, headers=headers, json=new_ref_data)
+		# Only try to create a new branch if not overwriting an existing one
+		if not overwrite:
+			# Create a new branch - use owner and repo_name from request
+			new_ref_url = f"https://api.github.com/repos/{owner}/{repo_name}/git/refs"
+			new_ref_data = {
+				'ref': f"refs/heads/{branch_name}",
+				'sha': source_sha
+			}
+			
+			new_ref_response = requests.post(new_ref_url, headers=headers, json=new_ref_data)
+			
+			if new_ref_response.status_code == 422:  # Branch already exists
+				# Send a confirmation message back to the user
+				return jsonify({
+					'status': 'error',
+					'message': f"Branch '{branch_name}' already exists. Do you want to push this commit to it? (Note: because, we aren't creating a new branch, the 'Source Branch' field will not be used).",
+					'branch_exists': True
+				}), 422
+			
+			elif new_ref_response.status_code != 201:
+				return jsonify({
+					'status': 'error',
+					'message': f"Failed to create new branch: {new_ref_response.status_code}"
+				}), 500
+		else:
+			pass  # We'll handle getting file SHA in the next step
+			
+		# Whether overwriting or not, we need to check if the file exists to get its SHA
+		file_contents_url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{file_path}"
 		
-		if new_ref_response.status_code == 422:  # Branch already exists
-			# TODO: If the branch already exists, confirm with a dialog window before overwriting.
-			flash(f"Branch '{branch_name}' already exists. Please choose a different name.", "error")
-			return redirect(url_for('from_git', github_url=f"https://github.com/{file_info['owner']}/{file_info['repo']}/blob/{file_info['branch']}/{file_info['path']}"))
+		# If overwriting, check in the specified branch
+		if overwrite:
+			file_contents_url += f"?ref={branch_name}"
+		else:
+			# Otherwise check in the default branch
+			file_contents_url += f"?ref={source_branch}"
+			
+		file_response = requests.get(file_contents_url, headers=headers)
 		
-		elif new_ref_response.status_code != 201:
-			flash(f"Failed to create new branch: {new_ref_response.status_code}", "error")
-			return redirect(url_for('annotate'))
+		if file_response.status_code == 200:
+			# File exists, get its SHA
+			file_data = file_response.json()
+			file_sha = file_data['sha']
 		
-		# Update the file with new content
-		update_url = f"https://api.github.com/repos/{file_info['owner']}/{file_info['repo']}/contents/{file_info['path']}"
+		# Update the file with new content - use owner and repo_name from request
+		update_url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{file_path}"
 		
 		# Encode the file content as base64
 		content_bytes = edited_content.encode('utf-8')
 		base64_content = base64.b64encode(content_bytes).decode('utf-8')
 		
+		# Prepare update data
 		update_data = {
 			'message': commit_message,
 			'content': base64_content,
-			'sha': file_info['sha'],
 			'branch': branch_name
 		}
+		
+		# Only include sha if we have one (required for updating existing files)
+		if file_sha:
+			update_data['sha'] = file_sha
 		
 		update_response = requests.put(update_url, headers=headers, json=update_data)
 		
 		if update_response.status_code != 200 and update_response.status_code != 201:
-			flash(f"Failed to update file: {update_response.status_code}", "error")
-			return redirect(url_for('annotate'))
+			return jsonify({
+				'status': 'error',
+				'message': f"Failed to update file: {update_response.status_code}"
+			}), 500
 		
-		# Create a pull request using user token for attribution
-		pr_url = f"https://api.github.com/repos/{file_info['owner']}/{file_info['repo']}/pulls"
-		pr_data = {
-			'title': f"Update {file_info['path']}",
-			'body': f"Created using the {GITHUB_APP_NAME} GitHub App",
-			'head': branch_name,
-			'base': file_info['branch']
-		}
+		# Generate the branch URL to return - use owner and repo_name from request
+		branch_url = f"https://github.com/{owner}/{repo_name}/tree/{branch_name}"
 		
-		user_headers = {
-			'Authorization': f"Bearer {session['user_access_token']}",
-			'Accept': 'application/vnd.github.v3+json'
-		}
-		
-		pr_response = requests.post(pr_url, headers=user_headers, json=pr_data)
-		
-		if pr_response.status_code != 201:
-			# Fallback to installation token if user token fails
-			pr_response = requests.post(pr_url, headers=headers, json=pr_data)
-			if pr_response.status_code != 201:
-				flash(f"Failed to create pull request: {pr_response.status_code} - {pr_response.text}", "error")
-				return redirect(url_for('annotate'))
-		
-		pr_data = pr_response.json()
-		flash(f"Changes saved and PR created: {pr_data.get('html_url')}", "success")
-		return redirect(pr_data.get('html_url'))
+		# Return success with branch URL
+		return jsonify({
+			'status': 'success',
+			'message': f"Changes saved to branch '{branch_name}'",
+			'branch_url': branch_url
+		})
 		
 	except Exception as e:
-		flash(f"Error saving changes: {str(e)}", "error")
+		return jsonify({
+			'status': 'error',
+			'message': f"Error saving changes: {str(e)}"
+		}), 500
 	
-	return redirect(url_for('from_git', github_url=f"https://github.com/{file_info['owner']}/{file_info['repo']}/blob/{file_info['branch']}/{file_info['path']}"))
-
 def generate_id():
 	import random
 	import string
@@ -997,6 +1063,63 @@ def retokenize():
 	SENTENCES[lineno] = newtext
 	return jsonify({"success": True})
 
+@app.route('/reload_grammar', methods=['GET'])
+@loginrequired
+def reload_grammar():
+	username = session['username']
+	# terminate the worker pool
+	WORKERS[username].shutdown(wait=False)
+	del WORKERS[username]
+	_, lang = os.path.split(os.path.basename(app.config['GRAMMAR']))
+	app.logger.info('Loading grammar %r', lang)
+	pool = ProcessPoolExecutor(max_workers=1)
+	future = pool.submit(
+			worker.loadgrammar,
+			app.config['GRAMMAR'], app.config['LIMIT'])
+	future.result()
+	app.logger.info('Grammar %r loaded.', lang)
+	# train on annotated sentences
+	annotations = readannotations()
+	if annotations:
+		app.logger.info('training on %d previously annotated sentences',
+				len(annotations))
+		trees, sents = [], []
+		headrules = pool.submit(worker.getprop, 'headrules').result()
+		for block in annotations.values():
+			# HOTFIX for ROOT error
+			blocklns = block.splitlines()
+			for iln,blockln in enumerate(blocklns):
+				if '\tROOT\t' in blockln and '\t0\t' not in blockln:
+					blocklns[iln] = blocklns[iln].replace('\tROOT\t', '\tXXX-XXX\t')
+			block = '\n'.join(blocklns)
+
+			item = exporttree(block.splitlines())
+			canonicalize(item.tree)
+			if headrules:
+				applyheadrules(item.tree, headrules)
+			trees.append(item.tree)
+			sents.append(item.sent)
+			future = pool.submit(worker.augment, trees, sents)
+		future.result()
+	WORKERS[username] = pool
+	return jsonify({"success": True})
+
+@app.route('/annotate/cancel_parse', methods=['POST'])
+def cancel_parse():
+	"""Cancel any running parse requests for the current user."""
+	username = session.get('username')
+	if not username:
+		return jsonify({'status': 'error', 'message': 'Not logged in'}), 401
+	
+	with app.config['ACTIVE_PARSES_LOCK']:
+		active_futures = app.config['ACTIVE_PARSES'].pop(username, [])
+		for future in active_futures:
+			if not future.done():
+				future.cancel()
+	
+	return jsonify({'status': 'success'})
+
+# Modify the parse route to track active requests
 @app.route('/annotate/parse', methods=['POST'])
 @loginrequired
 def parse():
@@ -1007,7 +1130,7 @@ def parse():
 	username = session['username']
 	require = request.json.get('require', '')
 	block = request.json.get('block', '')
-	urlprm = dict(sentno=sentno,github_url=github_url)
+	urlprm = dict(sentno=sentno, github_url=github_url)
 	if require and require != '':
 		urlprm['require'] = require
 	if block and block != '':
@@ -1018,52 +1141,79 @@ def parse():
 		session.modified = True
 	if len(sent.split()) > app.config['LIMIT']:
 		return jsonify({'error': 'Sentence too long. (Maximum length: {})'.format(app.config['LIMIT'])})
-	else:
-		resp = WORKERS[username].submit(
-				worker.getparses,
-				sent, require, block).result()
-	senttok, parsetrees, messages, elapsed = resp
-	maxdepth = ''
-	if not parsetrees:
-		result = ('no parse! reload page to clear constraints, '
-				'or continue with next sentence.')
-		nbest = dep = depsvg = ''
-	else:
-		dep = depsvg = ''
-		if workerattr('headrules'):
-			dep = writedependencies(parsetrees[0][1], senttok, 'conll')
-			depsvg = Markup(DrawDependencies.fromconll(dep).svg())
-		result = ''
-		dectree, maxdepth, _ = decisiontree(parsetrees, senttok, urlprm)
-		prob, ptree, _treestr, _fragments = parsetrees[0]
-		treeobj = ActivedopTree(ptree = ptree, senttok = senttok)
-		nbest = Markup('%s\nbest tree: %s' % (
-				dectree,
-				('%(n)d. [%(prob)s] '
-				'<a href="/annotate/accept?%(urlprm)s">accept this tree</a>; '
-				'<a href="/annotate/edit?%(urlprm)s">edit</a>; '
-				'<a href="/annotate/deriv?%(urlprm)s">derivation</a>\n\n'
-				'%(tree)s'
-				% dict(
-					n=1,
-					prob=probstr(prob),
-					urlprm=urlencode(dict(urlprm, n=1)),
-					tree=treeobj.gtree()))))
-	msg = '\n'.join(messages)
-	elapsed = 'CPU time elapsed: %s => %gs' % (
-			' '.join('%gs' % a for a in elapsed), sum(elapsed))
-	info = '\n'.join((
-			'length: %d;' % len(senttok), msg, elapsed,
-			'most probable parse trees:',
-			''.join('%d. [%s] %s' % (n + 1, probstr(prob),
-					writediscbrackettree(treestr, senttok))
-					for n, (prob, _tree, treestr, _deriv)
-					in enumerate(parsetrees)
-					if treestr is not None)
-			+ '\n'))
+	
+	# Submit the parse task to the worker pool
+	future = WORKERS[username].submit(
+			worker.getparses,
+			sent, require, block)
+	
+	# Track this future in the active parses for this user
+	with app.config['ACTIVE_PARSES_LOCK']:
+		if username not in app.config['ACTIVE_PARSES']:
+			app.config['ACTIVE_PARSES'][username] = []
+		app.config['ACTIVE_PARSES'][username].append(future)
+	
+	try:
+		# Get the result of the future
+
+		resp = future.result()
+		
+		# Remove the future from active parses
+		with app.config['ACTIVE_PARSES_LOCK']:
+			if username in app.config['ACTIVE_PARSES'] and future in app.config['ACTIVE_PARSES'][username]:
+				app.config['ACTIVE_PARSES'][username].remove(future)
+		
+		senttok, parsetrees, messages, elapsed = resp
+		maxdepth = ''
+	
+		if not parsetrees:
+			result = ('no parse! reload page to clear constraints, '
+					'or continue with next sentence.')
+			nbest = dep = depsvg = ''
+		else:
+			dep = depsvg = ''
+			if workerattr('headrules'):
+				dep = writedependencies(parsetrees[0][1], senttok, 'conll')
+				depsvg = Markup(DrawDependencies.fromconll(dep).svg())
+			result = ''
+			dectree, maxdepth, _ = decisiontree(parsetrees, senttok, urlprm)
+			prob, ptree, _treestr, _fragments = parsetrees[0]
+			treeobj = ActivedopTree(ptree = ptree, senttok = senttok)
+			nbest = Markup('%s\nbest tree: %s' % (
+					dectree,
+					('%(n)d. [%(prob)s] '
+					'<a href="/annotate/accept?%(urlprm)s">accept this tree</a>; '
+					'<a href="/annotate/edit?%(urlprm)s">edit</a>; '
+					'<a href="/annotate/deriv?%(urlprm)s">derivation</a>\n\n'
+					'%(tree)s'
+					% dict(
+						n=1,
+						prob=probstr(prob),
+						urlprm=urlencode(dict(urlprm, n=1)),
+						tree=treeobj.gtree()))))
+		msg = '\n'.join(messages)
+		elapsed = 'CPU time elapsed: %s => %gs' % (
+				' '.join('%gs' % a for a in elapsed), sum(elapsed))
+		info = '\n'.join((
+				'length: %d;' % len(senttok), msg, elapsed,
+				'most probable parse trees:',
+				''.join('%d. [%s] %s' % (n + 1, probstr(prob),
+						writediscbrackettree(treestr, senttok))
+						for n, (prob, _tree, treestr, _deriv)
+						in enumerate(parsetrees)
+						if treestr is not None)
+				+ '\n'))
+	except CancelledError:
+			# If cancelled, return a minimal result
+			return jsonify({'error': 'Parse request cancelled'})
+	finally:
+		# Always remove the future from active parses
+		with app.config['ACTIVE_PARSES_LOCK']:
+			if username in app.config['ACTIVE_PARSES'] and future in app.config['ACTIVE_PARSES'][username]:
+				app.config['ACTIVE_PARSES'][username].remove(future)
 	return render_template('annotatetree.html', sent=sent, result=result,
-			nbest=nbest, info=info, dep=dep, depsvg=depsvg, maxdepth=maxdepth,
-			msg='%d parse trees' % len(parsetrees))
+		nbest=nbest, info=info, dep=dep, depsvg=depsvg, maxdepth=maxdepth,
+		msg='%d parse trees' % len(parsetrees))
 
 @app.route('/annotate/filter')
 @loginrequired
@@ -1144,8 +1294,9 @@ def edit():
 	"""Edit tree manually."""
 	sentno = int(request.args.get('sentno'))  # 1-indexed
 	github_url = request.args.get('github_url', None)
-	file_path = None
-	has_push_access = False
+	file_path = ''
+	owner = ''
+	repo_name = ''
 	orig_content = session.get('file_info', {}).get('original_content', None)
 	# tree_by is the line in orig_content that starts with '# tree_by ='
 	if orig_content:
@@ -1159,8 +1310,7 @@ def edit():
 	if github_url and github_url != 'None':
 		github_url = unquote(github_url)
 		try:
-			_, _, _, file_path = parse_github_url(github_url)
-			has_push_access = check_push_access(session)
+			owner, repo_name, branch, file_path = parse_github_url(github_url)
 		except ValueError as e:
 			flash(f"Error: {str(e)}", "error")
 			return redirect(url_for('annotate'))
@@ -1184,7 +1334,7 @@ def edit():
 		# ensures that SENTENCES array is updated with the tokenized sentence
 		SENTENCES[lineno] = ' '.join(senttok)
 	elif 'n' in request.args: # edit the nth automatic parse
-		msg = Markup('<button id="undo" onclick="goback()">Go back</button>')
+		# msg = Markup('<button id="undo" onclick="goback()">Go back</button>')
 		n = int(request.args.get('n', 1))
 		session['actions'][NBEST] = n
 		require = request.args.get('require', '')
@@ -1214,9 +1364,11 @@ def edit():
 			functiontags=sorted(t for t in (workerattr('functiontags')
 				| set(app.config['FUNCTIONTAGWHITELIST'])) if '}' not in t and '@' not in t and t != "p"),
 			morphtags=sorted(workerattr('morphtags')),
-			has_push_access=has_push_access,
 			file_path=file_path,
 			tree_by=tree_by,
+			owner = owner,
+			repo_name = repo_name,
+			source_branch=branch,
 			annotationhelp=ANNOTATIONHELP,
 			rows=rows, cols=100,
 			msg=msg)

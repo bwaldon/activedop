@@ -8,10 +8,6 @@
   var oldtree = '';  // used to track changes in the text area
   
   // Ensure functions are defined in global scope
-  window.submitForm = function() {
-    document.getElementById('content-input').value = editor.getValue();
-    document.getElementById('save-form').submit();
-  };
   
   window.goback = function() {
     var sentno = document.getElementById('sentno').value;
@@ -81,12 +77,204 @@
 {% endif %}
 
 <!-- Main Tree Editing Area -->
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-  <!-- Left Column: Tree Display -->
-  <div class="lg:col-span-2">
+{% if session.user_login -%}
+<div class="grid grid-cols-1 gap-6">
+  <!-- Save Form -->
+<button type="button" class="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700" 
+  onclick="toggleForm()">
+  Expand GitHub push details
+</button>
+
+<form id="save-form" action="{{ url_for('save_changes') }}" method="post" class="bg-white p-4 border border-gray-200 rounded hidden">
+  <input type="hidden" id="content-input" name="content">
+  <div class="space-y-3 mb-4">
+    <div>
+      <label for="owner" class="block text-sm font-medium text-gray-700 mb-1">Repo Owner:</label>
+      <input type="text" class="w-full p-2 border border-gray-300 rounded" 
+       id="owner" name="owner" 
+       value="{{ owner }}" required>
+    </div>
+
+    <div>
+      <label for="repo_name" class="block text-sm font-medium text-gray-700 mb-1">Repo Name:</label>
+      <input type="text" class="w-full p-2 border border-gray-300 rounded" 
+       id="repo_name" name="repo_name" 
+       value="{{ repo_name }}" required>
+    </div>
+
+
+    <div>
+      <label for="file_path" class="block text-sm font-medium text-gray-700 mb-1">File Name (+ Path):</label>
+      <input type="text" class="w-full p-2 border border-gray-300 rounded" 
+       id="file_path" name="file_path" 
+       value="{{ file_path }}" required>
+    </div>
+
+    <div>
+      <label for="source_branch" class="block text-sm font-medium text-gray-700 mb-1">Source Branch Name ('main' if left blank):</label>
+      <input type="text" class="w-full p-2 border border-gray-300 rounded" 
+       id="source_branch" name="source_branch" 
+       value="{{ source_branch }}" required>
+    </div>
+
+    <div>
+      <label for="branch_name" class="block text-sm font-medium text-gray-700 mb-1">New Branch Name:</label>
+      <input type="text" class="w-full p-2 border border-gray-300 rounded" 
+       id="branch_name" name="branch_name" 
+       value="edit-{{ file_path.replace('/', '-') }}" required>
+    </div>
+    
+    <div>
+      <label for="commit_message" class="block text-sm font-medium text-gray-700 mb-1">Commit Message:</label>
+      <input type="text" class="w-full p-2 border border-gray-300 rounded" 
+       id="commit_message" name="commit_message" 
+       value="Edit {{ file_path }}" required>
+    </div>
+    
+    <div>
+      <label for="tree_by" class="block text-sm font-medium text-gray-700 mb-1">Tree by:</label>
+      <input type="text" class="w-full p-2 border border-gray-300 rounded" 
+       id="tree_by" name="tree_by" 
+       value="{{ tree_by }}" required>
+    </div>
+  </div>
+  
+  <button type="button" class="w-full px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700" 
+    onclick="submitForm()">
+    Commit Changes to legal-cgel Branch
+  </button>
+</form>
+{% endif %}
+
+<script>
+  function toggleForm() {
+    var form = document.getElementById('save-form');
+    var button = form.previousElementSibling;
+    form.classList.toggle('hidden');
+    button.textContent = form.classList.contains('hidden') ? 'Expand GitHub push details' : 'Hide GitHub push details';
+  }
+</script>
+
+<script>
+  window.submitForm = function() {
+    // document.getElementById('content-input').value = editor.getValue();
+    fetch("{{ url_for('save_changes') }}", {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        content: editor.getValue(),
+        owner:  document.getElementById('owner').value,
+        repo_name: document.getElementById('repo_name').value,
+        file_path: document.getElementById('file_path').value,
+        source_branch: document.getElementById('source_branch').value,
+        branch_name: document.getElementById('branch_name').value,
+        commit_message: document.getElementById('commit_message').value,
+        tree_by: document.getElementById('tree_by').value
+      })
+    })
+    .then(response => {
+      // Always try to parse JSON first, even for error responses
+      return response.json().then(data => {
+        // Add status to the data object so we can check it later
+        return {...data, status: response.status};
+      }).catch(e => {
+        // If JSON parsing fails, return a simple object with status
+        return {status: response.status, message: 'Failed to parse response'};
+      });
+    })
+    .then(data => {
+      // Handle branch exists confirmation case
+      if (data.status === 422 && data.branch_exists) {
+        if (confirm(data.message)) {
+          // User confirmed overwrite - make another request with overwrite flag
+          return fetch("{{ url_for('save_changes') }}", {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+            content: editor.getValue(),
+            owner:  document.getElementById('owner').value,
+            repo_name: document.getElementById('repo_name').value,
+            file_path: document.getElementById('file_path').value,
+            source_branch: document.getElementById('source_branch').value,
+            branch_name: document.getElementById('branch_name').value,
+            commit_message: document.getElementById('commit_message').value,
+            tree_by: document.getElementById('tree_by').value,
+              overwrite: true  // Add flag to indicate overwrite is confirmed
+            })
+          })
+          .then(response => response.json())
+          .then(overwriteData => {
+            if (overwriteData.status === 'error') {
+              alert('Error: ' + overwriteData.message);
+              return null;
+            }
+            
+            // Display success message with link to branch
+            displayBranchLink(overwriteData);
+            return overwriteData;
+          })
+          .catch(error => {
+            alert('Error during overwrite: ' + (error.message || 'Unknown error'));
+            return null;
+          });
+        } else {
+          // User cancelled overwrite
+          console.log('User cancelled branch overwrite');
+          return null;
+        }
+      } 
+      // Handle other errors
+      else if (data.status !== 200 && data.status !== 201) {
+        alert('Error: ' + (data.message || 'Unknown error occurred'));
+        return null;
+      }
+      // Handle success case
+      else {
+        console.log('Success', data);
+        // Display success message with link to branch
+        displayBranchLink(data);
+        return data;
+      }
+    })
+    .catch(error => {
+      alert('Error: ' + (error.message || 'Unknown error occurred'));
+      console.error('Error:', error);
+    });
+  };
+  
+  // Function to display the branch link
+  function displayBranchLink(data) {
+    if (data.branch_url) {
+      // Create a div for the success message if it doesn't exist
+      let messageDiv = document.getElementById('save-result-message');
+      if (!messageDiv) {
+        messageDiv = document.createElement('div');
+        messageDiv.id = 'save-result-message';
+        messageDiv.style = 'margin-top: 20px; padding: 10px; background-color: #e6f7e6; border-radius: 5px;';
+        document.querySelector('form').appendChild(messageDiv);
+      }
+      
+      // Set the success message with a clickable link
+      messageDiv.innerHTML = `
+        <p>${data.message}</p>
+        <p>View branch: <a href="${data.branch_url}" target="_blank">${data.branch_url}</a></p>
+      `;
+    } else {
+      alert('Changes saved successfully!');
+    }
+  }
+</script>
+
+</form>
+  <!-- Tree Display -->
+  <div>
     <!-- Fixed Trash Icon -->
-    <div class="fixed top-4 right-4 w-10 h-10 flex items-center justify-center bg-red-100 text-red-700 rounded-md shadow hover:bg-red-200 cursor-pointer z-10">
-      <span class="text-xl"
+    <div class="fixed bottom-4 right-4 w-12 h-12 flex items-center justify-center bg-red-100 text-red-700 rounded-md shadow hover:bg-red-200 cursor-pointer z-10">
+      <span class="text-4xl"
       data-id="deletenode"
       ondragover="allowDropTrash(event);"
       ondrop="dropTrash(event);" 
@@ -96,21 +284,19 @@
     <!-- Hidden IDs -->
     <input type="hidden" id="sentid" value="{{ id }}" />
     <input type="hidden" id="sentno" value="{{ sentno }}" />
-    
+
+    <!-- Validator Output -->
+    <div class="mb-4">
+      <pre id="validatorOut" class="p-3 bg-gray-50 border border-gray-200 rounded h-36 overflow-auto"></pre>
+    </div>
+
     <!-- Current Sentence Display -->
     <div class="mb-4 p-3 bg-gray-50 border border-gray-200 rounded">
       {{ senttok }}
     </div>
     
-    <!-- Validator Output -->
-    <div class="mb-4">
-      <h3 class="text-sm font-medium text-gray-700 mb-2">Validation Output:</h3>
-      <pre id="validatorOut" class="p-3 bg-gray-50 border border-gray-200 rounded h-36 overflow-auto"></pre>
-    </div>
-    
     <!-- Tree Display -->
     <div class="mb-4">
-      <h3 class="text-sm font-medium text-gray-700 mb-2">Tree Structure:</h3>
       <pre id="tree" class="p-3 bg-gray-50 border border-gray-200 rounded overflow-auto">[...wait for it...]</pre>
     </div>
     
@@ -119,116 +305,97 @@
       <!-- Content will be dynamically generated -->
     </div>
   </div>
-  
-  <!-- Right Column: Tools and Editor -->
-  <div class="lg:col-span-1">
-    <!-- Help Section (Hidden by Default) -->
-    <div id="help" class="hidden mb-4 p-3 bg-gray-50 border border-gray-200 rounded">
-      <h3 class="text-base font-medium text-gray-900 mb-2">Tree Editing Help</h3>
-      <ul class="list-disc pl-6 space-y-1 text-sm">
-        <li>To change a label, click on a node to select a different label from a list.</li>
-        <li>Re-attach a node by dragging and dropping it on a new parent.</li>
-        <li>Nodes can be removed and new ones added by dragging.</li>
-        <li>Right-click on a node to re-parse a subtree.</li>
-        <li>Edit the bracketing manually in the text box below.</li>
-      </ul>
-      <pre class="mt-3 p-2 bg-gray-100 text-xs rounded overflow-x-auto">{{ annotationhelp }}</pre>
+</div>
+
+<!-- Help Section (Hidden by Default) -->
+<div id="help" class="hidden mb-4 p-3 bg-gray-50 border border-gray-200 rounded">
+  <h3 class="text-base font-medium text-gray-900 mb-2">Tree Editing Help</h3>
+  <ul class="list-disc pl-6 space-y-1 text-sm">
+    <li>To change a label, click on a node to select a different label from a list.</li>
+    <li>Re-attach a node by dragging and dropping it on a new parent.</li>
+    <li>Nodes can be removed and new ones added by dragging.</li>
+    <li>Right-click on a node to re-parse a subtree.</li>
+    <li>Edit the bracketing manually in the text box below.</li>
+  </ul>
+  <pre class="mt-3 p-2 bg-gray-100 text-xs rounded overflow-x-auto">{{ annotationhelp }}</pre>
+</div>
+
+<!-- Available Labels -->
+<div id="info" class="mb-4 p-3 bg-white border border-gray-200 rounded">
+  <div class="mb-3">
+    <div class="tabs">
+      <button class="tablink active" onclick="openTab(event, 'ConstituentLabels')">Constituent Labels</button>
+      <button class="tablink" onclick="openTab(event, 'POSTags')">POS Tags</button>
+      <button class="tablink" onclick="openTab(event, 'FunctionTags')">Function Tags</button>
     </div>
     
-    <!-- Available Labels -->
-    <div id="info" class="mb-4 p-3 bg-white border border-gray-200 rounded">
-      <div class="mb-3">
-        <h3 class="text-sm font-medium text-gray-700 mb-2">Constituent Labels:</h3>
-        <div class="flex flex-wrap gap-1">
-          {% for label in phrasallabels -%}
-            {% if label != 'ROOT' -%}
-            <span class="n px-2 py-1 bg-blue-100 text-blue-800 rounded text-sm cursor-move" 
-                  data-id="newlabel_{{ label }}-Head" 
-                  draggable="true" 
-                  ondragstart="drag(event);">{{ label }}</span> 
-            {%- endif %}
-          {% endfor -%}
-        </div>
+    <div id="ConstituentLabels" class="tabcontent">
+      <div class="flex flex-wrap gap-1">
+        {% for label in phrasallabels -%}
+          {% if label != 'ROOT' -%}
+          <span class="n px-2 py-1 bg-blue-100 text-blue-800 rounded text-sm cursor-move" 
+                data-id="newlabel_{{ label }}-Head" 
+                draggable="true" 
+                ondragstart="drag(event);">{{ label }}</span> 
+          {%- endif %}
+        {% endfor -%}
       </div>
-      
-      <div class="mb-3">
-        <h3 class="text-sm font-medium text-gray-700 mb-2">POS Tags:</h3>
-        <div class="flex flex-wrap gap-1">
-          {% for label in poslabels -%}
-          <span class="p px-2 py-1 bg-green-100 text-green-800 rounded text-sm">{{ label }}</span>
-          {% endfor -%}
-        </div>
-      </div>
-      
-      {% if functiontags -%}
-      <div>
-        <h3 class="text-sm font-medium text-gray-700 mb-2">Function Tags:</h3>
-        <div class="flex flex-wrap gap-1">
-          {% for tag in functiontags -%}
-          <span class="f px-2 py-1 bg-amber-100 text-amber-800 rounded text-sm">{{ tag }}</span>
-          {% endfor -%}
-        </div>
-      </div>
-      {%- endif %}
     </div>
     
-    <!-- Tree Edit Form -->
-    <div id="edit" class="mb-4">
-      <form name="queryform" onSubmit="event.preventDefault(); if(typeof replacetree === 'function') { replacetree(); } else { alert('replacetree function not found'); } return false;">
-        <div class="mb-3">
-          <label for="tree" class="block text-sm font-medium text-gray-700 mb-1">Edit Tree Structure:</label>
-          <textarea name="tree" id="treeTextarea" rows="{{ rows }}" cols="{{ cols }}" class="w-full p-2 border border-gray-300 rounded font-mono">{{ treestr }}</textarea>
-        </div>
-        <input type="hidden" name="sentno" value="{{ sentno }}" />
-        <input type="hidden" name="senttok" value="{{ senttok }}" />
-        <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
-          Validate
-        </button>
-      </form>
+    <div id="POSTags" class="tabcontent" style="display:none;">
+      <div class="flex flex-wrap gap-1">
+        {% for label in poslabels -%}
+        <span class="p px-2 py-1 bg-green-100 text-green-800 rounded text-sm">{{ label }}</span>
+        {% endfor -%}
+      </div>
     </div>
     
-    <!-- Save Form -->
-    <form id="save-form" action="{{ url_for('save_changes') }}" method="post" class="bg-white p-4 border border-gray-200 rounded">
-      <input type="hidden" id="content-input" name="content">
-      
-      {% if has_push_access %}
-      <div class="space-y-3 mb-4">
-        <div>
-          <label for="branch_name" class="block text-sm font-medium text-gray-700 mb-1">New Branch Name:</label>
-          <input type="text" class="w-full p-2 border border-gray-300 rounded" 
-                 id="branch_name" name="branch_name" 
-                 value="edit-{{ file_path.replace('/', '-') }}" required>
-        </div>
-        
-        <div>
-          <label for="commit_message" class="block text-sm font-medium text-gray-700 mb-1">Commit Message:</label>
-          <input type="text" class="w-full p-2 border border-gray-300 rounded" 
-                 id="commit_message" name="commit_message" 
-                 value="Edit {{ file_path }}" required>
-        </div>
-        
-        <div>
-          <label for="tree_by" class="block text-sm font-medium text-gray-700 mb-1">Tree by:</label>
-          <input type="text" class="w-full p-2 border border-gray-300 rounded" 
-                 id="tree_by" name="tree_by" 
-                 value="{{ tree_by }}" required>
-        </div>
+    <div id="FunctionTags" class="tabcontent" style="display:none;">
+      <div class="flex flex-wrap gap-1">
+        {% for tag in functiontags -%}
+        <span class="f px-2 py-1 bg-amber-100 text-amber-800 rounded text-sm">{{ tag }}</span>
+        {% endfor -%}
       </div>
-      
-      <button type="button" class="w-full px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700" 
-              onclick="submitForm()">
-        Save Changes & Create PR
-      </button>
-      {% else %}
-      <div class="p-3 bg-yellow-50 border border-yellow-300 rounded text-sm">
-        <p class="font-medium">Note:</p>
-        <p>This GitHub App installation doesn't have write permissions to this repository. 
-           You can edit the file, but you won't be able to create a PR. 
-           Please make sure the app has the necessary permissions.</p>
-      </div>
-      {% endif %}
-    </form>
+    </div>
   </div>
+</div>
+
+<script>
+  function openTab(evt, tabName) {
+    var i, tabcontent, tablinks;
+    tabcontent = document.getElementsByClassName("tabcontent");
+    for (i = 0; i < tabcontent.length; i++) {
+      tabcontent[i].style.display = "none";
+    }
+    tablinks = document.getElementsByClassName("tablink");
+    for (i = 0; i < tablinks.length; i++) {
+      tablinks[i].className = tablinks[i].className.replace(" active", "");
+    }
+    document.getElementById(tabName).style.display = "block";
+    evt.currentTarget.className += " active";
+  }
+</script>
+
+<style>
+  .tablink.active {
+    background-color: #e2e8f0; /* Tailwind CSS bg-gray-200 */
+    color: #1a202c; /* Tailwind CSS text-gray-900 */
+  }
+</style>
+
+<!-- Tree Edit Form -->
+<div id="edit" class="mb-4">
+  <form name="queryform" onSubmit="event.preventDefault(); if(typeof replacetree === 'function') { replacetree(); } else { alert('replacetree function not found'); } return false;">
+    <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+      Validate from text area
+    </button>
+    <div class="mb-3"></div>
+    <div class="mb-3">
+      <textarea name="tree" id="treeTextarea" rows="{{ rows }}" cols="{{ cols }}" class="w-full p-2 border border-gray-300 rounded font-mono">{{ treestr }}</textarea>
+    </div>
+    <input type="hidden" name="sentno" value="{{ sentno }}" />
+    <input type="hidden" name="senttok" value="{{ senttok }}" />
+  </form>
 </div>
 
 <!-- Label Pickers -->

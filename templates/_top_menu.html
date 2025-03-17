@@ -1,17 +1,6 @@
 <!-- _top_menu.html partial -->
 <div class="bg-white shadow rounded mb-6">
-    <div class="p-4">
-      <!-- Navigation Progress Info -->
-      <div class="flex items-center mb-4">
-        <span class="text-gray-700">{{ sentno }} / {{ totalsents }}</span>
-        <div class="ml-4 flex-1">
-          <div class="w-full bg-gray-200 rounded-full h-2.5">
-            <div class="bg-blue-600 h-2.5 rounded-full" style="width: {{ (100 * numannotated / totalsents)|round(1) }}%"></div>
-          </div>
-          <span class="text-sm text-gray-600">{{ (100 * numannotated / totalsents)|round(1) }}% complete</span>
-        </div>
-      </div>
-  
+    <div class="p-4 flex justify-between items-center">
       <!-- Main Menu Dropdown -->
       <div class="relative inline-block text-left" x-data="{ open: false }">
         <button @click="open = !open" type="button" class="inline-flex justify-center w-full rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
@@ -20,15 +9,8 @@
             <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
           </svg>
         </button>
-  
-        <div x-show="open" @click.away="open = false" class="origin-top-right absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 divide-y divide-gray-100 focus:outline-none z-10">
-          <div class="py-1">
-            <a href="{{ prevlink }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Previous</a>
-            <a href="{{ nextlink }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Next</a>
-            {% if unextlink is defined %}
-            <a href="{{ unextlink }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Next Unannotated</a>
-            {% endif %}
-          </div>
+
+        <div x-show="open" @click.away="open = false" class="origin-top-right absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 divide-y divide-gray-100 focus:outline-none z-10" style="right: auto; left: 0;">
           <div class="py-1">
             <a href="/annotate/context/{{ lineno }}#{{ lineno }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Context</a>
             <a href="#" onclick="document.location='/annotate/get_data_psv'" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Export All Data (PSV)</a>
@@ -41,16 +23,82 @@
             <a href="javascript: toggle('help');" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Help</a>
           </div>
           <div class="py-1">
-            {% if not session.username -%}
-            <a href="{{ url_for('login') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Log In</a>
+            {% if not session.user_login -%}
+            <a href="{{ url_for('github_login') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Sign in to GitHub</a>
             {% else -%}
-            <a href="{{ url_for('logout') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Log Out</a>
+            <a href="{{ url_for('github_logout') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Sign out of GitHub</a>
+            {%- endif %}
+            {% if session.username -%}
+            <a href="{{ url_for('logout') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Log out of Activedop</a>
             {%- endif %}
           </div>
         </div>
       </div>
+
+      <a href="{{ prevlink }}" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Previous</a>
+           <!-- Navigation Progress Info -->
+           <div class="flex items-center">
+            <span class="text-gray-700">{{ sentno }} / {{ totalsents }}</span>
+          </div>
+      <a href="{{ nextlink }}" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Next</a>
+      {% if unextlink is defined %}
+      <a href="{{ unextlink }}" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Next Unannotated</a>
+      {% endif %}
+
+      <div class="p-4 flex justify-between items-center border-t border-gray-200">
+        {% if session.user_login -%}
+        <p class="text-sm text-gray-700">Logged in to GitHub as <strong>{{ session.user_login }}</strong></p>
+        {% else -%}
+        <p class="text-sm text-gray-700">Not logged into GitHub</p>
+        {%- endif %}
+      </div>
+
+      <!-- Button to reload the grammar. Accesses reload_grammar endpoint as a GET request -->
+      <button type="button" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700" onclick="reloadGrammar()">
+        Reload Grammar
+      </button>
+  
+    </div>
+
+    </div>
   
       <!-- Optional Action Buttons -->
       {% block action_buttons %}{% endblock %}
-    </div>
+<script>
+  function reloadGrammar() {
+    // Reload the grammar by accessing the reload_grammar endpoint with an ajax GET request.
+    var sentno = document.getElementById('sentno').value;
+    $.get('/reload_grammar', {}, function(data) {
+      if (data.success) {
+        alert('Grammar reloaded successfully.');
+      } else {
+        alert('Error: ' + data.error);
+      }
+    });
+  }
+  // Ensure that the parse function is using our enhanced version that tracks the request
+  $(document).ready(function() {
+      // Override the default form submission for parsing
+      $('#parseform').submit(function(e) {
+          e.preventDefault();
+          var sentno = "{{ sentno }}";
+          var github_url = "{{ github_url }}";
+          return parse(sentno, github_url);
+      });
+      
+      // Override the default behavior of navigation links
+      $('a[href^="/annotate/annotate/"]').click(function(e) {
+          // If we have an active parse request, cancel it before navigating
+          if (currentParseRequest) {
+              currentParseRequest.abort();
+              currentParseRequest = null;
+              
+              // Send cancellation to server
+              navigator.sendBeacon('/annotate/cancel_parse', JSON.stringify({
+                  username: '{{ session.username }}'
+              }));
+          }
+      });
+  });
+  </script>
   </div>
