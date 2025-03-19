@@ -594,7 +594,8 @@ def generate_id():
 	id = None
 	# verify that the ID is unique 
 	db = getdb()
-	cur = db.execute(
+	cur = db.cursor()
+	cur.execute(
 		'SELECT id FROM entries ORDER BY sentno ASC'
 	)
 	entries = cur.fetchall()
