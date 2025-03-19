@@ -1306,10 +1306,9 @@ def edit():
 	if 'dec' in request.args:
 		session['actions'][DECTREE] += int(request.args.get('dec', 0))
 	session.modified = True
-	msg = ''
+	annotated = False
 	if request.args.get('annotated') == '1': # there is a saved tree
-		msg = Markup('<font color=red>You have already annotated '
-				'this sentence.</font><button id="undo" onclick="undoAccept()">Revert (deletes annotation)</button>')
+		annotated = True
 		id = QUEUE[sentno - 1][3]
 		treestr, n = getannotation(username, id) # get tree from database
 		treeobj = ActivedopTree.from_str(treestr)
@@ -1317,7 +1316,6 @@ def edit():
 		# ensures that SENTENCES array is updated with the tokenized sentence
 		SENTENCES[lineno] = ' '.join(senttok)
 	elif 'n' in request.args: # edit the nth automatic parse
-		# msg = Markup('<button id="undo" onclick="goback()">Go back</button>')
 		n = int(request.args.get('n', 1))
 		session['actions'][NBEST] = n
 		require = request.args.get('require', '')
@@ -1347,14 +1345,14 @@ def edit():
 			functiontags=sorted(t for t in (workerattr('functiontags')
 				| set(app.config['FUNCTIONTAGWHITELIST'])) if '}' not in t and '@' not in t and t != "p"),
 			morphtags=sorted(workerattr('morphtags')),
+			annotated=annotated,
 			file_path=file_path,
 			tree_by=tree_by,
 			owner = owner,
 			repo_name = repo_name,
 			source_branch=branch,
 			annotationhelp=ANNOTATIONHELP,
-			rows=rows, cols=100,
-			msg=msg)
+			rows=rows, cols=100)
 
 @app.route('/annotate/redraw', methods=['POST'])
 @loginrequired
