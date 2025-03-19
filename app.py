@@ -1083,38 +1083,7 @@ def reload_grammar():
 	# terminate the worker pool
 	WORKERS[username].shutdown(wait=False)
 	del WORKERS[username]
-	_, lang = os.path.split(os.path.basename(app.config['GRAMMAR']))
-	app.logger.info('Loading grammar %r', lang)
-	pool = ProcessPoolExecutor(max_workers=1)
-	future = pool.submit(
-			worker.loadgrammar,
-			app.config['GRAMMAR'], app.config['LIMIT'])
-	future.result()
-	app.logger.info('Grammar %r loaded.', lang)
-	# train on annotated sentences
-	annotations = readannotations()
-	if annotations:
-		app.logger.info('training on %d previously annotated sentences',
-				len(annotations))
-		trees, sents = [], []
-		headrules = pool.submit(worker.getprop, 'headrules').result()
-		for block in annotations.values():
-			# HOTFIX for ROOT error
-			blocklns = block.splitlines()
-			for iln,blockln in enumerate(blocklns):
-				if '\tROOT\t' in blockln and '\t0\t' not in blockln:
-					blocklns[iln] = blocklns[iln].replace('\tROOT\t', '\tXXX-XXX\t')
-			block = '\n'.join(blocklns)
-
-			item = exporttree(block.splitlines())
-			canonicalize(item.tree)
-			if headrules:
-				applyheadrules(item.tree, headrules)
-			trees.append(item.tree)
-			sents.append(item.sent)
-			future = pool.submit(worker.augment, trees, sents)
-		future.result()
-	WORKERS[username] = pool
+	loadgrammar(username)
 	return jsonify({"success": True})
 
 @app.route('/annotate/cancel_parse', methods=['POST'])
