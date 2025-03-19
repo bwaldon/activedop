@@ -1164,9 +1164,9 @@ def parse():
 			nbest = Markup('%s\nbest tree: %s' % (
 					dectree,
 					('%(n)d. [%(prob)s] '
-					'<a href="/annotate/accept?%(urlprm)s">accept this tree</a>; '
-					'<a href="/annotate/edit?%(urlprm)s">edit</a>; '
-					'<a href="/annotate/deriv?%(urlprm)s">derivation</a>\n\n'
+					'<a href="/annotate/accept?%(urlprm)s" style="color: blue; text-decoration: underline;">accept this tree</a>; '
+					'<a href="/annotate/edit?%(urlprm)s" style="color: blue; text-decoration: underline;">edit</a>; '
+					'<a href="/annotate/deriv?%(urlprm)s" style="color: blue; text-decoration: underline;">derivation</a>\n\n'
 					'%(tree)s'
 					% dict(
 						n=1,
@@ -1231,9 +1231,9 @@ def filterparsetrees():
 	nbest = Markup('%d parse trees\n%s' % (
 			len(parsetrees_),
 			'\n'.join('%(n)d. [%(prob)s] '
-				'<a href="/annotate/accept?%(urlprm)s">accept this tree</a>; '
-				'<a href="/annotate/edit?%(urlprm)s">edit</a>; '
-				'<a href="/annotate/deriv?%(urlprm)s">derivation</a>\n\n'
+				'<a href="/annotate/accept?%(urlprm)s" style="color: blue; text-decoration: underline;">accept this tree</a>; '
+				'<a href="/annotate/edit?%(urlprm)s" style="color: blue; text-decoration: underline;">edit</a>; '
+				'<a href="/annotate/deriv?%(urlprm)s" style="color: blue; text-decoration: underline;">derivation</a>\n\n'
 				'%(tree)s' % dict(
 					n=n + 1,
 					prob=probstr(prob),
@@ -1361,7 +1361,7 @@ def redraw():
 	data = request.get_json()
 	sentno = int(data.get('sentno')) # 1-indexed
 	has_error = False
-	link = ('''<a href="#" onclick="accept()">accept this tree</a>
+	link = ('''<a href="#" onclick="accept()" style="color: blue; text-decoration: underline;">accept this tree</a>
 		<input type="hidden" id="sentno" value="%d">'''
 	% (sentno))
 	try:
@@ -1400,8 +1400,8 @@ def graphical_operation_postamble(dt, senttok, cgel_tree_terminals, sentno):
 	treeobj = ActivedopTree(ptree = ptree, senttok = senttok, 
 						 cgel_tree_terminals = cgel_tree_terminals)
 	msg = treeobj.validate()
-	link = ('<a href="/annotate/accept?%s">accept this tree</a>'
-		% urlencode(dict(sentno=sentno, tree=treeobj.treestr())))	
+	link = ('<a href="/annotate/accept?%s" style="color: blue; text-decoration: underline;">accept this tree</a>'
+		% urlencode(dict(sentno=sentno, tree=treeobj.treestr())))
 	return treeobj, link, msg
 
 @app.route('/annotate/newlabel', methods=['POST'])
@@ -1620,7 +1620,7 @@ def reattach():
 				'treestr': treeobj.treestr()})
 	except Exception as err:
 		msg = old_treeobj.validate()
-		link = ('<a href="/annotate/accept?%s">accept this tree</a>'
+		link = ('<a href="/annotate/accept?%s" style="color: blue; text-decoration: underline;">accept this tree</a>'
 			% urlencode(dict(sentno=int(data.get('sentno')), tree=old_treeobj.treestr())))
 		error = "ERROR: " + str(err)
 		return jsonify({'msg': msg,
@@ -1710,7 +1710,7 @@ def replacesubtree():
 	msg = treeobj.validate()
 	session['actions'][REPARSE] += 1
 	session.modified = True
-	link = ('<a href="/annotate/accept?%s">accept this tree</a>'
+	link = ('<a href="/annotate/accept?%s" style="color: blue; text-decoration: underline;">accept this tree</a>'
 			% urlencode(dict(sentno=sentno, tree=treeobj.treestr())))
 	return jsonify({'msg': msg,
 				  'accept_link': link,
@@ -1933,9 +1933,9 @@ def decisiontree(parsetrees, sent, urlprm):
 			x = tree.value[n].nonzero()[1][0]
 			prob, _tree, _treestr, _fragments = parsetrees[x]
 			thistree = ('%(n)d. [%(prob)s] '
-					'<a href="/annotate/accept?%(urlprm)s">accept this tree</a>; '
-					'<a href="/annotate/edit?%(urlprm)s">edit</a>; '
-					'<a href="/annotate/deriv?%(urlprm)s">derivation</a><br>\n\n'
+					'<a href="/annotate/accept?%(urlprm)s" style="color: blue; text-decoration: underline;">accept this tree</a>; '
+					'<a href="/annotate/edit?%(urlprm)s" style="color: blue; text-decoration: underline;">edit</a>; '
+					'<a href="/annotate/deriv?%(urlprm)s" style="color: blue; text-decoration: underline;">derivation</a><br>\n\n'
 					% dict(
 						n=x + 1,
 						prob=probstr(prob),
@@ -1947,10 +1947,10 @@ def decisiontree(parsetrees, sent, urlprm):
 		return ('<span id=d%(n)d style="display: %(display)s; ">'
 				'%(indent)s%(constituent)s '
 				'<a href="javascript: showhide(\'d%(right)s\', \'d%(left)s\', '
-					'\'dd%(exright)s\', \'%(numtrees)s\'); ">'
+					'\'dd%(exright)s\', \'%(numtrees)s\'); " style="color: blue; text-decoration: underline;">'
 					'good constituent</a> '
 				'<a href="javascript: showhide(\'d%(left)s\', \'d%(right)s\', '
-					'\'dd%(exleft)s\', \'%(numtrees)s\'); ">'
+					'\'dd%(exleft)s\', \'%(numtrees)s\'); " style="color: blue; text-decoration: underline;">'
 					'bad constituent</a><br>'
 				'%(subtree1)s%(subtree2)s</span>' % dict(
 				n=n,
