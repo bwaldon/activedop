@@ -308,7 +308,9 @@ def from_git(github_url):
 			rows = max(5, treeobj.treestr().count('\n') + 1)
 			msg = ""
 			id = generate_id()
-			SENTENCES.insert(0, " ".join(senttok))
+			sent = " ".join(senttok)
+			SENTENCES.insert(0, sent)
+			QUEUE.insert(0, [0, 0, sent, id])
 			refreshqueue(username)
 			return render_template('edittree.html',
 				prevlink=('/annotate/annotate/%d' % (sentno - 1))
@@ -342,6 +344,7 @@ def from_git(github_url):
 			senttok = " ".join(senttok)
 			id = generate_id()
 			SENTENCES.insert(0, senttok)
+			QUEUE.insert(0, [0, 0, senttok, id])
 			refreshqueue(session['username'])
 
 			return redirect(url_for('annotate', sentno=1, github_url=github_url))	
