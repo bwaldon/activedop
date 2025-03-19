@@ -1312,6 +1312,7 @@ def edit():
 	file_path = ''
 	owner = ''
 	repo_name = ''
+	branch = ''
 	orig_content = session.get('file_info', {}).get('original_content', None)
 	# tree_by is the line in orig_content that starts with '# tree_by ='
 	if orig_content:
