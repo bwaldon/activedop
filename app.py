@@ -33,6 +33,7 @@ import sys
 import csv
 import json
 import sqlite3
+import psycopg2
 import logging
 import subprocess
 import click
@@ -128,6 +129,11 @@ logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 logger.handlers[0].setFormatter(logging.Formatter(
 		fmt='%(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+
+if app.config['DATABASE'] == 'remote':
+	DB_BLANK = '%s'
+else:	
+	DB_BLANK = '?'
 
 @app.route('/github_login')
 def github_login():
@@ -600,11 +606,10 @@ def generate_id():
 def refreshqueue(username):
 	""""Ensures that user can view annotations of sentences not in the 'initpriorities' queue.
 	These sentences are shown first, before the prioritized queue."""
+	cmd = f'SELECT id, sentno, cgel_tree FROM entries WHERE username = {DB_BLANK} ORDER BY sentno ASC'
 	db = getdb()
-	cur = db.execute(
-		'SELECT id, sentno, cgel_tree FROM entries WHERE username = ? ORDER BY sentno ASC',
-		(username, )
-	)
+	cur = db.cursor()
+	cur.execute(cmd, (username,))
 	dbentries = cur.fetchall()
 	queue_ids = [entry[3] for entry in QUEUE]
 	for row in dbentries:
@@ -626,10 +631,9 @@ def initpriorities(username):
 	Sentences with saved annotations are included first in the order and are not re-parsed."""
 	sentfilename = app.config['SENTENCES']
 	db = getdb()
-	cur = db.execute(
-		'SELECT * FROM entries WHERE username = ? ORDER BY sentno ASC',
-		(username, )
-	)
+	cmd = f'SELECT id FROM entries WHERE username = {DB_BLANK} ORDER BY sentno ASC'
+	cur = db.cursor()
+	cur.execute(cmd, (username,))
 	dbentries = cur.fetchall()
 	dbentryids = {a[0] for a in dbentries}
 	if sentfilename is None:
@@ -713,40 +717,55 @@ def initdb():
 	"""Initializes the database."""
 	db = getdb()
 	with app.open_resource('schema.sql', mode='r') as inp:
-		db.cursor().executescript(inp.read())
+		schema = inp.read()
+	if app.config['DATABASE'] == 'remote':
+		with db.cursor() as cur:
+			for statement in schema.split(';'):
+				if statement.strip():
+					cur.execute(statement)
+	else:
+		db.cursor().executescript(schema)
 	db.commit()
 	app.logger.info('Initialized the database.')
 
 
 def connectdb():
 	"""Connects to the specific database."""
-	result = sqlite3.connect(app.config['DATABASE'])
-	# result.row_factory = sqlite3.Row
+	if app.config['DATABASE'] == 'remote':
+		db_params = {
+            "host": os.getenv("DB_HOST"),  
+            "database": os.getenv("DB_NAME"),
+            "user": os.getenv("DB_UNAME"),       # default is often 'postgres'
+            "password": os.getenv("DB_PWD"),
+            "port": os.getenv("DB_PORT")                 # default PostgreSQL port
+        }
+		result = psycopg2.connect(**db_params)
+	else:
+		result = sqlite3.connect(app.config['DATABASE'])
 	return result
 
 
 def getdb():
 	"""Opens a new database connection if there is none yet for the
 	current application context."""
-	if not hasattr(g, 'sqlitedb'):
-		g.sqlitedb = connectdb()
-	return g.sqlitedb
+	if not hasattr(g, 'db'):
+		g.db = connectdb()
+	return g.db
 
 
 @app.teardown_appcontext
 def closedb(error):
 	"""Closes the database again at the end of the request."""
-	if hasattr(g, 'sqlitedb'):
-		g.sqlitedb.close()
+	if hasattr(g, 'db'):
+		g.db.close()
 
 @app.route('/annotate/get_data_psv')
 def get_data_psv():
 	username = session['username']
+	cmd = f'SELECT * FROM entries WHERE username = {DB_BLANK} ORDER BY sentno ASC'
 	db = getdb()
-	cur = db.execute(
-		'SELECT * FROM entries WHERE username = ? ORDER BY sentno ASC',
-		(username, )
-	)
+	cur = db.cursor()
+	cur.execute(cmd, (username,))
 	rows = cur.fetchall()
 	output_dir = "tmp"
 	if not os.path.exists(output_dir):
@@ -767,10 +786,9 @@ def firstunannotated(username):
 	"""Return index of first unannotated sentence,
 	according to the prioritized order."""
 	db = getdb()
-	cur = db.execute(
-			'select id from entries where username = ? '
-			'order by sentno asc',
-			(username, ))
+	cmd = f'SELECT id FROM entries WHERE username = {DB_BLANK} ORDER BY sentno ASC'
+	cur = db.cursor() 
+	cur.execute(cmd, (username,))
 	entries = {a[0] for a in cur}
 	# sentno=prioritized index, lineno=original index
 	for sentno, (_, _, _, id) in enumerate(QUEUE, 1):
@@ -782,8 +800,9 @@ def firstunannotated(username):
 def numannotated(username):
 	"""Number of unannotated sentences for an annotator."""
 	db = getdb()
-	cur = db.execute('select count(sentno) from entries where username = ?',
-			(username, ))
+	cmd = f'SELECT count(sentno) FROM entries WHERE username = {DB_BLANK}'
+	cur = db.cursor()
+	cur.execute(cmd, (username,))
 	result = cur.fetchone()
 	return result[0]
 
@@ -791,18 +810,10 @@ def numannotated(username):
 def getannotation(username, id):
 	"""Fetch annotation of a single sentence from database."""
 	db = getdb()
-	if app.config['CGELVALIDATE'] is None:
-		cur = db.execute(
-				'select tree, nbest '
-				'from entries '
-				'where username = ? and id = ? ',
-				(username, id))
-	else:
-		cur = db.execute(
-				'select cgel_tree, nbest '
-				'from entries '
-				'where username = ? and id = ? ',
-				(username, id))
+	selection = 'cgel_tree, nbest' if app.config['CGELVALIDATE'] else 'tree, nbest'
+	cmd = f'select {selection} from entries where username = {DB_BLANK} and id = {DB_BLANK}'
+	cur = db.cursor()
+	cur.execute(cmd, (username, id))
 	entry = cur.fetchone()
 	return (None, 0) if entry is None else (entry[0], entry[1])
 
@@ -810,15 +821,13 @@ def getannotation(username, id):
 def readannotations(username=None):
 	"""Get all annotations, or ones by a given annotator."""
 	db = getdb()
+	cur = db.cursor()
 	if username is None:
-		cur = db.execute(
-				'select sentno, tree from entries '
-				'order by sentno asc')
+		cmd = 'select sentno, tree from entries order by sentno asc'
+		cur.execute(cmd)
 	else:
-		cur = db.execute(
-				'select sentno, tree from entries where username = ? '
-				'order by sentno asc',
-				(username, ))
+		cmd = f'select sentno, tree from entries where username = {DB_BLANK} order by sentno asc'
+		cur.execute(cmd, (username,))
 	entries = cur.fetchall()
 	return OrderedDict(entries)
 
@@ -826,7 +835,12 @@ def readannotations(username=None):
 def addentry(id, sentno, tree, cgel_tree, actions):
 	"""Add an annotation to the database."""
 	db = getdb()
-	db.execute(
+	if app.config['DATABASE'] == 'remote':
+		query = 'INSERT INTO entries VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)'
+		with db.cursor() as cur:
+			cur.execute(query, (id, sentno, session['username'], tree, cgel_tree, *actions, datetime.now().strftime('%F %H:%M:%S')))
+	else:
+		db.execute(
 			'insert or replace into entries '
 			'values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
 			(id, sentno, session['username'], tree, cgel_tree, *actions,
@@ -885,9 +899,9 @@ def direct_entry():
 	elif not sentid:
 		return jsonify({'error': 'Sentence ID is empty.'})
 	db = getdb()
-	cur = db.execute(
-		'SELECT id FROM entries ORDER BY sentno ASC'
-	)
+	cmd = 'SELECT id FROM entries ORDER BY sentno ASC'
+	cur = db.cursor()
+	cur.execute(cmd)
 	entries = cur.fetchall()
 	existing_ids = {entry[0] for entry in entries} | {entry[3] for entry in QUEUE}
 	if sentid in existing_ids:
@@ -1045,10 +1059,10 @@ def annotate(sentno, github_url):
 def undoaccept():
 	sentid = request.json.get('sentid', 0)
 	username = session['username']
+	cmd = f'DELETE FROM entries WHERE username = {DB_BLANK} AND id = {DB_BLANK}'
 	db = getdb()
-	db.execute(
-	'DELETE FROM entries WHERE username = ? AND id = ?',
-	(username, sentid))
+	cur = db.cursor()
+	cur.execute(cmd, (username, sentid))
 	db.commit()
 	return jsonify({"success": True})
 
@@ -1798,11 +1812,17 @@ def accept():
 		msg = treeobj.validate()
 		if 'ERROR' in msg or 'WARNING' in msg:
 			flash('Your annotation for sentence %d was stored %r but may contain errors. Please click Validate to check.' % (sentno, actions))
-			return redirect(url_for('annotate', sentno=sentno))
+			if request.method == 'POST':
+				return jsonify({'redirect': url_for('annotate', sentno=sentno)})
+			else:
+				return redirect(url_for('annotate', sentno=sentno))
 	flash('Your annotation for sentence %d was stored %r' % (sentno, actions))
-	return (redirect(url_for('annotate', sentno=1))
-		if sentno >= len(SENTENCES)
-		else redirect(url_for('annotate', sentno=sentno+1)))
+	if request.method == 'POST':
+		return jsonify({'redirect': url_for('annotate', sentno=1) if sentno >= len(SENTENCES) else url_for('annotate', sentno=sentno+1)})
+	else:
+		return (redirect(url_for('annotate', sentno=1))
+			if sentno >= len(SENTENCES)
+			else redirect(url_for('annotate', sentno=sentno+1)))
 
 @app.route('/annotate/context/<int:lineno>')
 def context(lineno):
