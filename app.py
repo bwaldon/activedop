@@ -35,7 +35,6 @@ import json
 import sqlite3
 import psycopg2
 import logging
-import subprocess
 import click
 from math import log
 from time import time
@@ -1817,14 +1816,32 @@ def download_pdf():
 	if not os.path.exists(output_dir):
 		os.makedirs(output_dir)
 
-	with open(os.path.join(output_dir, "file.tex"), 'w') as latex_file:
-		latex_file.write(cgel_latex)
+	latex_url = os.getenv("LATEX_SERVICE_URL", '')
+	latex_creds = os.getenv('LATEX_CREDS', '')
 
-	subprocess.run(['pdflatex', '-output-directory', output_dir, os.path.join(output_dir, "file.tex")])
+	# Prepare the request
+	headers = {
+		"Content-Type": "application/json"
+	}
+	auth = tuple(latex_creds.split(':')) # Handle basic auth
 
-	pdf_path = os.path.join(output_dir, "file.pdf")
+	payload = {
+		"latex_code": cgel_latex
+	}
 
-	return send_file(pdf_path, as_attachment=True, attachment_filename='downloaded_file.pdf')
+	# Make the request and save the PDF
+	response = requests.post(
+		latex_url,
+		auth=auth,
+		headers=headers,
+		json=payload
+	)
+
+	# Save the response content to PDF file
+	with open(f"{output_dir}/pdf_tree.pdf", 'wb') as f:
+		f.write(response.content)
+
+	return send_file(f"{output_dir}/pdf_tree.pdf", as_attachment=True, attachment_filename='downloaded_file.pdf')
 
 @app.route('/annotate/exportcgeltree')
 def exportcgeltree():

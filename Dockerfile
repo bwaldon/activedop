@@ -26,7 +26,7 @@ COPY newsentsExample.csv.rankings.json newsentsExample.csv.rankings.json
 
 # Install dependencies
 
-RUN apt-get update && apt-get install -y make texlive-latex-extra && \
+RUN apt-get update && \
 	pip3 install cython && \
 	pip3 install setuptools
 WORKDIR roaringbitmap/
